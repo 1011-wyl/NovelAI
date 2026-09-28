@@ -106,7 +106,9 @@ class DeepSeekLLMGateway:
     request_count: int = field(default=0, init=False)
     operation_log: list[dict[str, Any]] = field(default_factory=list, init=False)
     _on_usage: Callable[..., None] | None = field(default=None, init=False)
+    _on_call: Callable[..., None] | None = field(default=None, init=False)
     _last_retry_count: int = field(default=0, init=False)
+    provider_name: str = field(default="deepseek", init=False)
 
     def __post_init__(self) -> None:
         if not self.api_key.strip():
@@ -723,6 +725,8 @@ class DeepSeekLLMGateway:
         response_format: dict[str, str] | None = None,
         operation: str = "",
     ) -> str:
+        from novel_agent.telemetry import classify_llm_error, current_llm_context
+
         v4_model = self.model.startswith("deepseek-v4")
         thinking_enabled = operation in {
             "create_brief",
@@ -752,8 +756,30 @@ class DeepSeekLLMGateway:
         if response_format:
             payload["response_format"] = response_format
         response_attempts = 2 if response_format else 1
+        started = time.perf_counter()
         for response_attempt in range(response_attempts):
-            response = self._request_with_retry(payload)
+            try:
+                response = self._request_with_retry(payload)
+            except LLMProviderError as exc:
+                latency_ms = int((time.perf_counter() - started) * 1000)
+                error_type, error_message, error_status = classify_llm_error(exc)
+                ctx = current_llm_context()
+                self._log_operation(
+                    operation=operation or "llm_call",
+                    model=self.model,
+                    usage={},
+                    retry_count=self._last_retry_count,
+                    status="failed",
+                    latency_ms=latency_ms,
+                    error_type=error_type,
+                    error_message=error_message,
+                    error_status_code=error_status,
+                    project_id=ctx.project_id,
+                    chapter_id=ctx.chapter_id,
+                    run_id=ctx.run_id,
+                    category=ctx.category,
+                )
+                raise
             usage = response.get("usage")
             if isinstance(usage, dict):
                 self.last_usage = usage
@@ -763,37 +789,98 @@ class DeepSeekLLMGateway:
             else:
                 self.last_usage = {}
             self.request_count += 1
-            self._log_operation(
-                operation=operation,
-                model=response.get("model", self.model),
-                usage=self.last_usage,
-                retry_count=self._last_retry_count + response_attempt,
-            )
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            retry_count = self._last_retry_count + response_attempt
             try:
                 choice = response["choices"][0]
                 finish_reason = choice.get("finish_reason")
                 content = choice["message"]["content"]
             except (KeyError, IndexError, TypeError) as exc:
+                self._log_operation(
+                    operation=operation,
+                    model=response.get("model", self.model),
+                    usage=self.last_usage,
+                    retry_count=retry_count,
+                    status="failed",
+                    latency_ms=latency_ms,
+                    error_type="LLMResponseError",
+                    error_message="DeepSeek 响应缺少 choices[0].message.content",
+                )
                 raise LLMResponseError("DeepSeek 响应缺少 choices[0].message.content") from exc
             if finish_reason == "length":
                 if response_attempt + 1 < response_attempts:
+                    self._log_operation(
+                        operation=operation,
+                        model=response.get("model", self.model),
+                        usage=self.last_usage,
+                        retry_count=retry_count,
+                        status="success",
+                        latency_ms=latency_ms,
+                    )
                     budget = min(budget * 2, 32000)
                     payload["max_tokens"] = budget
                     payload["messages"][1]["content"] += (
                         "\n上一次输出因 token 不足被截断；这次必须返回一个完整且符合 Schema 的 JSON 对象。"
                     )
                     continue
+                self._log_operation(
+                    operation=operation,
+                    model=response.get("model", self.model),
+                    usage=self.last_usage,
+                    retry_count=retry_count,
+                    status="failed",
+                    latency_ms=latency_ms,
+                    error_type="LLMResponseError",
+                    error_message="DeepSeek 输出达到长度上限而被截断",
+                )
                 raise LLMResponseError("DeepSeek 输出达到长度上限而被截断")
             if finish_reason == "content_filter":
+                self._log_operation(
+                    operation=operation,
+                    model=response.get("model", self.model),
+                    usage=self.last_usage,
+                    retry_count=retry_count,
+                    status="failed",
+                    latency_ms=latency_ms,
+                    error_type="LLMResponseError",
+                    error_message="DeepSeek 内容过滤器未返回正文",
+                )
                 raise LLMResponseError("DeepSeek 内容过滤器未返回正文")
             if isinstance(content, str) and content.strip():
+                self._log_operation(
+                    operation=operation,
+                    model=response.get("model", self.model),
+                    usage=self.last_usage,
+                    retry_count=retry_count,
+                    status="success",
+                    latency_ms=latency_ms,
+                )
                 return content
             if response_attempt + 1 < response_attempts:
+                self._log_operation(
+                    operation=operation,
+                    model=response.get("model", self.model),
+                    usage=self.last_usage,
+                    retry_count=retry_count,
+                    status="success",
+                    latency_ms=latency_ms,
+                )
                 payload["messages"][1]["content"] += (
                     "\n上一次响应为空；这一次必须返回一个非空且符合 Schema 的 JSON 对象。"
                 )
+                continue
+            self._log_operation(
+                operation=operation,
+                model=response.get("model", self.model),
+                usage=self.last_usage,
+                retry_count=retry_count,
+                status="failed",
+                latency_ms=latency_ms,
+                error_type="LLMResponseError",
+                error_message="DeepSeek 返回了空内容",
+            )
+            raise LLMResponseError("DeepSeek 返回了空内容")
         raise LLMResponseError("DeepSeek 返回了空内容")
-
     def _request_with_retry(self, payload: dict[str, Any]) -> dict[str, Any]:
         url = f"{self.base_url}/chat/completions"
         headers = {
@@ -846,7 +933,19 @@ class DeepSeekLLMGateway:
         model: str,
         usage: dict[str, Any],
         retry_count: int,
+        status: str = "success",
+        latency_ms: int | None = None,
+        error_type: str | None = None,
+        error_message: str | None = None,
+        error_status_code: int | None = None,
+        project_id: str | None = None,
+        chapter_id: str | None = None,
+        run_id: str | None = None,
+        category: str | None = None,
     ) -> None:
+        from novel_agent.telemetry import current_llm_context
+
+        ctx = current_llm_context()
         entry = {
             "operation": operation or "llm_call",
             "model": model,
@@ -854,22 +953,38 @@ class DeepSeekLLMGateway:
             "completion_tokens": int(usage.get("completion_tokens", 0)),
             "total_tokens": int(usage.get("total_tokens", 0)),
             "retry_count": retry_count,
+            "status": status,
+            "latency_ms": latency_ms,
             "timestamp": time.time(),
         }
         self.operation_log.append(entry)
         if len(self.operation_log) > 50:
             self.operation_log.pop(0)
-        if self._on_usage:
+        payload = {
+            "date": time.strftime("%Y-%m-%d", time.localtime(entry["timestamp"])),
+            "operation": operation or "llm_call",
+            "model": model,
+            "prompt_tokens": entry["prompt_tokens"],
+            "completion_tokens": entry["completion_tokens"],
+            "total_tokens": entry["total_tokens"],
+            "retry_count": entry["retry_count"],
+            "project_id": project_id if project_id is not None else ctx.project_id,
+            "chapter_id": chapter_id if chapter_id is not None else ctx.chapter_id,
+            "run_id": run_id if run_id is not None else ctx.run_id,
+            "category": category or ctx.category or "agent",
+            "provider": self.provider_name,
+            "status": status,
+            "latency_ms": latency_ms,
+            "first_token_ms": None,
+            "cache_tokens": int(usage.get("prompt_cache_hit_tokens", 0) or 0),
+            "error_type": error_type,
+            "error_message": error_message,
+            "error_status_code": error_status_code,
+        }
+        callback = self._on_call or self._on_usage
+        if callback:
             try:
-                self._on_usage(
-                    date=time.strftime("%Y-%m-%d", time.localtime(entry["timestamp"])),
-                    operation=operation or "llm_call",
-                    model=model,
-                    prompt_tokens=entry["prompt_tokens"],
-                    completion_tokens=entry["completion_tokens"],
-                    total_tokens=entry["total_tokens"],
-                    retry_count=entry["retry_count"],
-                )
+                callback(**payload)
             except Exception:
                 pass
 

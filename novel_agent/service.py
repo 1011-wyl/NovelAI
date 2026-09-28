@@ -30,6 +30,7 @@ from novel_agent.models import (
 from novel_agent.repository import RepositoryError, SQLiteRepository
 from novel_agent.requirements import validate_requirements
 from novel_agent.story_skills import StorySkillsRuntime
+from novel_agent.telemetry import llm_call_scope
 from novel_agent.writing_skills import OhStoryWritingRuntime
 from novel_agent.workflow import ChapterWorkflow
 
@@ -48,7 +49,9 @@ class NovelAgentService:
 
     def create_novel(self, request: NovelCreateRequest) -> ProjectRecord:
         validate_requirements(request)
-        brief = self.gateway.create_brief(request)
+        project_id = new_id("novel")
+        with llm_call_scope(project_id=project_id, category="agent"):
+            brief = self.gateway.create_brief(request)
         if request.preferred_title:
             candidates = [request.preferred_title, *brief.title_candidates]
             brief = brief.model_copy(
@@ -57,7 +60,6 @@ class NovelAgentService:
                     "title_candidates": list(dict.fromkeys(candidates))[:6],
                 }
             )
-        project_id = new_id("novel")
         now = utc_now()
         confirmed = not request.require_plan_confirmation
         project = ProjectRecord(
@@ -139,15 +141,16 @@ class NovelAgentService:
     ) -> ProjectRecord:
         project = self._assert_editable_draft(project_id)
         fields = self._brief_fields(change.sections)
-        if change.feedback or change.sections:
-            candidate = self.gateway.revise_brief(
-                project.request,
-                project.brief,
-                change.feedback,
-                fields,
-            )
-        else:
-            candidate = self.gateway.create_brief(project.request)
+        with llm_call_scope(project_id=project_id, category="agent"):
+            if change.feedback or change.sections:
+                candidate = self.gateway.revise_brief(
+                    project.request,
+                    project.brief,
+                    change.feedback,
+                    fields,
+                )
+            else:
+                candidate = self.gateway.create_brief(project.request)
         if fields:
             merged = project.brief.model_dump(mode="json")
             generated = candidate.model_dump(mode="json")

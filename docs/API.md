@@ -30,8 +30,18 @@
 | GET | `/api/runs/{id}/events` | SSE 格式的工作流节点事件 |
 | GET/PUT | `/api/settings` | API、写作技能就绪状态与非敏感本地偏好 |
 | GET | `/api/usage` | 当前进程的模型累计用量与最近调用 |
-| GET | `/api/token/statistics?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` | 查询本地持久化的每日 Token 统计 |
+| GET | `/api/token/statistics?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` | 兼容接口：查询本地持久化的每日 Token 统计 |
+| GET | `/api/dashboard/writing` | 写作仪表盘：按项目/来源/时间范围与时区聚合字数时序 |
+| GET | `/api/dashboard/llm-api/stats` | LLM 统计：调用次数、Token、延迟与模型/项目分布 |
+| GET | `/api/dashboard/llm-api/records` | LLM 调用记录：筛选、搜索、排序与分页 |
 | GET | `/api/publishing` | Mock 发布状态与安全提示 |
+
+### 仪表盘接口说明
+
+- `GET /api/dashboard/writing` 查询参数：`project_id`、`source`（`user|agent|import`）、`start_at`、`end_at`、`timezone`（IANA 名称，如 `Asia/Shanghai`）。响应含 `summary.active_days`、`summary.creative_chapters` 与按日的 `time_series`。
+- `GET /api/dashboard/llm-api/stats` 可选筛选：`project_id`、`model_provider`、`model_id`、`category`、`operation`、`status`、`start_at`、`end_at`。响应含 `summary`、`model_time_series`、`by_model`、`by_project`、`options`。无首 Token 样本时 `avg_first_token_ms` 为 `null`。
+- `GET /api/dashboard/llm-api/records` 在 stats 相同筛选之外支持 `search`、`page`（默认 1）、`page_size`（5–100，默认 20）、`sort_by`、`sort_order`。排序白名单：`created_at`、`tokens_input`、`tokens_output`、`tokens_total`、`latency_ms`、`first_token_ms`、`retry_count`。非法参数返回 400。
+- 上述接口不返回 API Key、完整提示词或完整模型输出。旧的 `/api/token/statistics` 与 `/api/usage` 继续可用。
 
 ## 创建示例
 

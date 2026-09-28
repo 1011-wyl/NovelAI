@@ -117,6 +117,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
   gap: var(--ui-space-2);
   padding: var(--ui-space-1) var(--ui-space-2) var(--ui-space-3);
   min-height: 48px;
+  margin-bottom: var(--ui-space-1);
+  border-bottom: 1px solid var(--ui-border);
 }
 .sidebar-toggle {
   flex: 0 0 auto;
@@ -176,23 +178,30 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 nav[aria-label="主导航"] {
   display: grid;
-  gap: 2px;
+  gap: 4px;
   padding: 0 var(--ui-space-1);
+  flex: 0 0 auto;
+  align-content: start;
 }
 .nav-item {
   width: 100%;
+  height: var(--ui-nav-h);
   min-height: var(--ui-nav-h);
   border: 0;
   background: transparent;
   color: var(--ui-muted);
   text-align: left;
-  padding: 0 var(--ui-space-3);
-  border-radius: var(--ui-radius-sm);
+  padding: 0 8px 0 0;
+  border-radius: 6px;
   font-size: 14px;
+  line-height: 1.2;
+  font-weight: 500;
   cursor: pointer;
   display: flex;
-  gap: var(--ui-space-3);
+  gap: 0;
   align-items: center;
+  box-sizing: border-box;
+  overflow: hidden;
   transition: background var(--ui-transition), color var(--ui-transition);
 }
 .nav-item:hover {
@@ -202,15 +211,15 @@ nav[aria-label="主导航"] {
 .nav-item.active {
   background: var(--ui-subtle);
   color: var(--ui-text);
-  font-weight: 600;
+  font-weight: 700;
 }
 .nav-item .nav-icon {
-  width: 18px;
-  height: 18px;
+  width: var(--ui-nav-h);
+  height: var(--ui-nav-h);
   display: grid;
   place-items: center;
-  flex: 0 0 auto;
-  font-size: 15px;
+  flex: 0 0 var(--ui-nav-h);
+  font-size: 18px;
   line-height: 1;
 }
 .nav-item .nav-label { min-width: 0; }
@@ -1595,10 +1604,13 @@ legend {
   .brand { display: none; }
   nav[aria-label="主导航"] {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(6, 1fr);
     gap: 2px;
     width: 100%;
     padding: 0;
+  }
+  .sidebar-foot {
+    display: contents;
   }
   .nav-item {
     flex-direction: column;

@@ -9,6 +9,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from pydantic import BaseModel, ValidationError
 
@@ -168,6 +169,15 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
                     }
                 )
                 return
+            if path == "/api/dashboard/writing":
+                self._send_json(self._dashboard_writing())
+                return
+            if path == "/api/dashboard/llm-api/records":
+                self._send_json(self._dashboard_llm_records())
+                return
+            if path == "/api/dashboard/llm-api/stats":
+                self._send_json(self._dashboard_llm_stats())
+                return
             self._serve_static(path)
         except Exception as exc:
             self._handle_error(exc)
@@ -302,6 +312,56 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
             return {}
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
+    def _query_params(self) -> dict[str, str]:
+        query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+        return {key: values[-1] if values else "" for key, values in query.items()}
+
+    def _optional_query(self, params: dict[str, str], *keys: str) -> dict[str, str | None]:
+        return {key: (params.get(key) or None) for key in keys}
+
+    def _dashboard_writing(self) -> dict[str, Any]:
+        params = self._query_params()
+        return self.context.repository.get_writing_dashboard(
+            project_id=params.get("project_id") or None,
+            source=params.get("source") or None,
+            start_at=params.get("start_at") or None,
+            end_at=params.get("end_at") or None,
+            timezone_name=params.get("timezone") or "UTC",
+        )
+
+    def _dashboard_llm_stats(self) -> dict[str, Any]:
+        params = self._query_params()
+        return self.context.repository.get_llm_dashboard_stats(
+            project_id=params.get("project_id") or None,
+            model_provider=params.get("model_provider") or None,
+            model_id=params.get("model_id") or None,
+            category=params.get("category") or None,
+            operation=params.get("operation") or None,
+            status=params.get("status") or None,
+            start_at=params.get("start_at") or None,
+            end_at=params.get("end_at") or None,
+        )
+
+    def _dashboard_llm_records(self) -> dict[str, Any]:
+        params = self._query_params()
+        page = int(params.get("page") or "1")
+        page_size = int(params.get("page_size") or "20")
+        return self.context.repository.list_llm_call_records(
+            project_id=params.get("project_id") or None,
+            model_provider=params.get("model_provider") or None,
+            model_id=params.get("model_id") or None,
+            category=params.get("category") or None,
+            operation=params.get("operation") or None,
+            status=params.get("status") or None,
+            start_at=params.get("start_at") or None,
+            end_at=params.get("end_at") or None,
+            search=params.get("search") or None,
+            page=page,
+            page_size=page_size,
+            sort_by=params.get("sort_by") or "created_at",
+            sort_order=params.get("sort_order") or "desc",
+        )
+
     def _runtime_readiness(self) -> dict[str, dict[str, object]]:
         runtime = self.context.settings.api_readiness()
         runtime["story_skills"] = self.context.service.story_skills.readiness()
@@ -374,8 +434,19 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
             error = "REQUIREMENT_CONFLICT"
             details = exc.conflicts
         elif isinstance(exc, RepositoryError):
-            status = HTTPStatus.NOT_FOUND
-            error = "NOT_FOUND"
+            message = str(exc)
+            if any(
+                marker in message
+                for marker in ("非法", "必须", "不能早于", "只能是")
+            ):
+                status = HTTPStatus.BAD_REQUEST
+                error = "BAD_REQUEST"
+            else:
+                status = HTTPStatus.NOT_FOUND
+                error = "NOT_FOUND"
+        elif isinstance(exc, ValueError):
+            status = HTTPStatus.BAD_REQUEST
+            error = "BAD_REQUEST"
         elif isinstance(exc, WorkflowBlocked):
             status = HTTPStatus.CONFLICT
             error = "WORKFLOW_BLOCKED"

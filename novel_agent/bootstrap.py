@@ -57,7 +57,9 @@ def create_context(root: Path | None = None, database_path: Path | None = None) 
         root,
         enabled=settings.oh_story_enabled,
     )
-    if hasattr(gateway, "_on_usage"):
+    if hasattr(gateway, "_on_call"):
+        gateway._on_call = repository.save_token_usage  # type: ignore[attr-defined]
+    elif hasattr(gateway, "_on_usage"):
         gateway._on_usage = repository.save_token_usage  # type: ignore[attr-defined]
     memory_manager = MemoryManager(
         hot_budget_tokens=settings.memory_budget_tokens,

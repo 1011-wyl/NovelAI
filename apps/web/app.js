@@ -7,6 +7,7 @@ const labels = {
   create: "创建小说",
   reader: "作品阅读",
   memory: "长期记忆",
+  analytics: "仪表盘",
   settings: "系统设置",
 };
 
@@ -15,9 +16,11 @@ function escapeHtml(value) {
 }
 
 async function api(path, options = {}) {
+  const { signal, ...rest } = options;
   const response = await fetch(path, {
-    ...options,
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    ...rest,
+    signal,
+    headers: { "Content-Type": "application/json", ...(rest.headers || {}) },
   });
   const payload = await response.json();
   if (!response.ok) {
@@ -38,11 +41,14 @@ function notify(message, error = false) {
 function busy(show) { $("#busy").classList.toggle("hidden", !show); }
 
 function switchView(view) {
+  const previous = $$(".nav-item.active")[0]?.dataset.view;
+  if (previous === "analytics" && view !== "analytics") window.NovelDashboard?.deactivate();
   $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
   $$(".view").forEach((item) => item.classList.remove("active"));
   $(`#${view}View`).classList.add("active");
   $("#pageTitle").textContent = labels[view];
   if (view !== "reader") $("#readerView")?.classList.remove("show-chapter");
+  if (view === "analytics") window.NovelDashboard?.activate();
   if (view === "settings") loadSettings();
 }
 
@@ -748,13 +754,36 @@ async function generateChapter() {
   } catch (error) { notify(error.message, true); } finally { busy(false); }
 }
 
+function renderSettingsRuntime(runtime) {
+  const body = $("#settingsRuntimeBody");
+  if (!body) return;
+  if (!runtime) {
+    body.innerHTML = '<p class="muted">暂时无法读取运行能力状态。</p>';
+    return;
+  }
+  const rows = [
+    ["大模型 (LLM)", runtime.llm],
+    ["联网搜索", runtime.search],
+    ["向量嵌入", runtime.embedding],
+    ["发布适配", runtime.publisher],
+    ["Story Skills", runtime.story_skills],
+    ["OH Story 写作技能", runtime.oh_story],
+  ];
+  body.innerHTML = rows.map(([title, item]) => {
+    if (!item) return "";
+    const enabled = Boolean(item.enabled);
+    const configured = Boolean(item.configured);
+    const statusClass = enabled ? "ok" : configured ? "warn" : "off";
+    const statusText = enabled ? "已启用" : configured ? "已配置未启用" : "未配置";
+    const detail = [item.provider, item.model].filter(Boolean).join(" · ");
+    return `<div class="runtime-status-item"><div><b>${escapeHtml(title)}</b>${detail ? `<div class="muted">${escapeHtml(detail)}</div>` : ""}</div><span class="${statusClass}">${statusText}</span></div>`;
+  }).join("");
+}
+
 async function loadSettings() {
   try {
-    const [settings, usage] = await Promise.all([
-      api("/api/settings"),
-      api("/api/usage").catch(() => null),
-    ]);
-    renderUsage(usage);
+    const settings = await api("/api/settings");
+    renderSettingsRuntime(settings.runtime);
     const form = $("#settingsForm");
     for (const [key, value] of Object.entries(settings.preferences)) {
       const input = form.elements[key];
@@ -952,5 +981,13 @@ async function saveSettings(event) {
 
 function statusLabel(status) { return ({DRAFT:"等待方案确认",ACTIVE:"自动连载可用",PAUSED:"已暂停",HUMAN_REQUIRED:"需要人工处理",ARCHIVED:"已归档"})[status] || status; }
 
-initializeUsagePeriodPicker();
-boot();
+function startApp() {
+  window.NovelDashboard?.init({ api, escapeHtml, notify });
+  boot();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", startApp);
+} else {
+  startApp();
+}

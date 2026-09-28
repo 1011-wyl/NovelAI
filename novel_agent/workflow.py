@@ -31,6 +31,8 @@ from novel_agent.models import (
 )
 from novel_agent.repository import SQLiteRepository
 from novel_agent.story_skills import StorySkillsRuntime
+from novel_agent.telemetry import llm_call_scope
+from novel_agent.text_metrics import count_content_chars
 from novel_agent.writing_skills import OhStoryWritingRuntime
 
 
@@ -78,6 +80,25 @@ class ChapterWorkflow:
         run_id = new_id("run")
         self.repository.create_run(run_id, project_id, chapter.id)
 
+        with llm_call_scope(
+            project_id=project_id,
+            chapter_id=chapter.id,
+            run_id=run_id,
+            category="agent",
+        ):
+            return self._run_scoped(
+                project, project_id, chapter, run_id, number, existing
+            )
+
+    def _run_scoped(
+        self,
+        project: ProjectRecord,
+        project_id: str,
+        chapter: ChapterRecord,
+        run_id: str,
+        number: int,
+        existing: ChapterRecord | None,
+    ) -> WorkflowResult:
         try:
             self._emit(run_id, project_id, chapter.id, "LoadContext", "加载最近章节与正式记忆", 5)
             chapters = self.repository.list_chapters(project_id)
