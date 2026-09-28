@@ -21,19 +21,25 @@ from pydantic import BaseModel, ValidationError
 
 from novel_agent.adapters import APIConfigurationRequired
 from novel_agent.models import (
+    AssistantMode,
     ChapterPlan,
     ChapterPlanBatch,
     ChapterPlanSelection,
+    ChapterRecord,
+    ChapterRevisionAnalysis,
+    ChapterSelection,
     CharacterMemoryBatch,
     CharacterRecord,
     ContinuityContext,
     CreativeBrief,
     IssueSeverity,
     NovelCreateRequest,
+    ProjectRecord,
     ReadabilityContext,
     ReviewDecision,
     ReviewIssue,
     ReviewReport,
+    WorldFactRecord,
 )
 
 
@@ -646,6 +652,118 @@ class DeepSeekLLMGateway:
             max_tokens=max(4000, min(24000, target_chars * 2)),
             temperature=0.55,
             operation="revise_chapter",
+        )
+
+    def respond_to_chapter_assistant(
+        self,
+        *,
+        mode: AssistantMode,
+        user_message: str,
+        selection: ChapterSelection | None,
+        project: ProjectRecord,
+        chapter: ChapterRecord,
+        working_title: str,
+        working_content: str,
+        recent_summaries: list[str],
+        characters: list[CharacterRecord],
+        world_facts: list[WorldFactRecord],
+        timeline: list[dict[str, object]],
+    ) -> AssistantGatewayResponse:
+        from novel_agent.models import AssistantGatewayResponse as ResponseModel
+
+        mode_value = mode.value if hasattr(mode, "value") else str(mode)
+        selection_payload = (
+            selection.model_dump(mode="json") if selection is not None else None
+        )
+        context = {
+            "mode": mode_value,
+            "user_message": user_message,
+            "selection": selection_payload,
+            "project_title": project.title,
+            "chapter_number": chapter.number,
+            "working_title": working_title,
+            "working_content": working_content,
+            "recent_summaries": recent_summaries[-4:],
+            "characters": [
+                {"name": item.name, "role": item.role} for item in characters[:12]
+            ],
+            "world_facts": [
+                {"category": item.category, "statement": item.statement}
+                for item in world_facts[:12]
+            ],
+            "timeline": timeline[-12:],
+        }
+        if mode_value == "advisor":
+            system = (
+                "你是小说修订顾问。只给分析和建议，不要改写正文。"
+                "返回 JSON：{\"message\": \"...\", \"proposal\": null}。"
+            )
+        elif mode_value == "coauthor":
+            system = (
+                "你是小说共创助手。给出 2-3 个可执行改写方向，不要直接输出完整改稿。"
+                "返回 JSON：{\"message\": \"...\", \"proposal\": null}。"
+            )
+        else:
+            system = (
+                "你是小说编辑助手。保留用户未要求修改的剧情事实；"
+                "不擅自新增关键人物、世界规则或重大转折；有选区时优先只改选区；"
+                "proposal.content 必须是完整修订后正文，不得含解释或 Markdown 代码块；"
+                "explanation 单独放在 proposal.explanation。"
+                "返回 JSON：{\"message\": \"...\", \"proposal\": "
+                "{\"operation\": \"edit_chapter|rewrite_chapter\", "
+                "\"title\": \"...\", \"content\": \"...\", \"explanation\": \"...\"} 或 null}。"
+            )
+        user = f"章节修订助手上下文 JSON：\n{_compact_json(context)}"
+        return self._structured_chat(
+            ResponseModel,
+            system,
+            user,
+            max_tokens=12000 if mode_value == "editor" else 2500,
+            temperature=0.4,
+            operation=f"assistant_{mode_value}",
+        )
+
+    def analyze_chapter_revision(
+        self,
+        *,
+        project: ProjectRecord,
+        chapter: ChapterRecord,
+        title: str,
+        content: str,
+        characters: list[CharacterRecord],
+    ) -> ChapterRevisionAnalysis:
+        from novel_agent.models import ChapterRevisionAnalysis as AnalysisModel
+
+        context = {
+            "project_title": project.title,
+            "genre": project.request.genre,
+            "chapter_number": chapter.number,
+            "title": title,
+            "content": content,
+            "characters": [
+                {
+                    "name": item.name,
+                    "role": item.role,
+                    "state": item.current_state,
+                }
+                for item in characters[:20]
+            ],
+        }
+        system = (
+            "你是小说修订分析器。根据修订后的章节，产出结构化摘要与记忆更新。"
+            "不要编造正文没有依据的事实。world_facts 只列新增硬事实；"
+            "character_updates 仅在人物状态确实变化时给出。"
+            "返回 JSON：summary, timeline_event, character_updates, world_facts, "
+            "introduced_foreshadows, resolved_foreshadows。"
+        )
+        user = f"修订分析上下文 JSON：\n{_compact_json(context)}"
+        return self._structured_chat(
+            AnalysisModel,
+            system,
+            user,
+            max_tokens=4000,
+            temperature=0.2,
+            operation="analyze_chapter_revision",
         )
 
     def _structured_chat(

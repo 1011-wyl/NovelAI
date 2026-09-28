@@ -23,13 +23,24 @@ from novel_agent.adapters_remote import (
 )
 from novel_agent.config import Settings
 from novel_agent.models import (
+    AssistantMessageCreate,
+    AssistantRollbackRequest,
     BriefRegenerateRequest,
+    ChapterDraftUpdate,
+    ChapterRevisionCommitRequest,
     ChapterStatus,
     CreativeBrief,
     NovelCreateRequest,
 )
 from novel_agent.repository import RepositoryError, SQLiteRepository
 from novel_agent.requirements import RequirementConflict
+from novel_agent.revision_errors import (
+    AssistantChangeStaleError,
+    AssistantChangeStateError,
+    ChapterNotEditableError,
+    EditConflictError,
+    RevisionAnalysisError,
+)
 from novel_agent.service import NovelAgentService
 from novel_agent.tags import public_tag_catalog
 from novel_agent.workflow import WorkflowBlocked
@@ -101,6 +112,46 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
                     {
                         "items": self.context.repository.list_chapter_versions(
                             match.group(1), int(match.group(2))
+                        )
+                    }
+                )
+                return
+            match = re.fullmatch(r"/api/novels/([^/]+)/chapters/(\d+)/workspace", path)
+            if match:
+                self._send_json(
+                    self.context.service.get_chapter_workspace(
+                        match.group(1), int(match.group(2))
+                    )
+                )
+                return
+            match = re.fullmatch(
+                r"/api/novels/([^/]+)/chapters/(\d+)/assistant/sessions", path
+            )
+            if match:
+                self._send_json(
+                    {
+                        "items": self.context.service.list_assistant_sessions(
+                            match.group(1), int(match.group(2))
+                        )
+                    }
+                )
+                return
+            match = re.fullmatch(r"/api/assistant/sessions/([^/]+)/messages", path)
+            if match:
+                self._send_json(
+                    {
+                        "items": self.context.service.get_assistant_messages(
+                            match.group(1)
+                        )
+                    }
+                )
+                return
+            match = re.fullmatch(r"/api/assistant/sessions/([^/]+)/changes", path)
+            if match:
+                self._send_json(
+                    {
+                        "items": self.context.service.list_assistant_changes(
+                            match.group(1)
                         )
                     }
                 )
@@ -257,6 +308,66 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
                     )
                 )
                 return
+            match = re.fullmatch(r"/api/novels/([^/]+)/chapters/(\d+)/revisions", path)
+            if match:
+                request = ChapterRevisionCommitRequest.model_validate(payload)
+                self._send_json(
+                    self.context.service.commit_chapter_edit_draft(
+                        match.group(1), int(match.group(2)), request
+                    )
+                )
+                return
+            match = re.fullmatch(
+                r"/api/novels/([^/]+)/chapters/(\d+)/versions/(\d+)/restore", path
+            )
+            if match:
+                self._send_json(
+                    self.context.service.restore_chapter_version(
+                        match.group(1), int(match.group(2)), int(match.group(3))
+                    )
+                )
+                return
+            match = re.fullmatch(
+                r"/api/novels/([^/]+)/chapters/(\d+)/assistant/sessions", path
+            )
+            if match:
+                self._send_json(
+                    self.context.service.create_assistant_session(
+                        match.group(1), int(match.group(2))
+                    ),
+                    HTTPStatus.CREATED,
+                )
+                return
+            match = re.fullmatch(r"/api/assistant/sessions/([^/]+)/messages", path)
+            if match:
+                request = AssistantMessageCreate.model_validate(payload)
+                self._send_json(
+                    self.context.service.send_assistant_message(match.group(1), request)
+                )
+                return
+            match = re.fullmatch(r"/api/assistant/sessions/([^/]+)/rollback", path)
+            if match:
+                request = AssistantRollbackRequest.model_validate(payload)
+                self._send_json(
+                    self.context.service.rollback_assistant_session(
+                        match.group(1),
+                        to_message_id=request.to_message_id,
+                        expected_draft_hash=request.expected_draft_hash,
+                    )
+                )
+                return
+            match = re.fullmatch(r"/api/assistant/changes/([^/]+)/approve", path)
+            if match:
+                self._send_json(
+                    self.context.service.approve_assistant_change(match.group(1))
+                )
+                return
+            match = re.fullmatch(r"/api/assistant/changes/([^/]+)/reject", path)
+            if match:
+                self._send_json(
+                    self.context.service.reject_assistant_change(match.group(1))
+                )
+                return
             self._send_json({"error": "NOT_FOUND", "message": "接口不存在"}, HTTPStatus.NOT_FOUND)
         except Exception as exc:
             self._handle_error(exc)
@@ -270,6 +381,15 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
                 brief = CreativeBrief.model_validate(payload)
                 self._send_json(
                     self.context.service.update_draft_brief(match.group(1), brief)
+                )
+                return
+            match = re.fullmatch(r"/api/novels/([^/]+)/chapters/(\d+)/edit-draft", path)
+            if match:
+                update = ChapterDraftUpdate.model_validate(payload)
+                self._send_json(
+                    self.context.service.save_chapter_edit_draft(
+                        match.group(1), int(match.group(2)), update
+                    )
                 )
                 return
             if path != "/api/settings":
@@ -287,6 +407,18 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:
         try:
             path = self.path.split("?", 1)[0]
+            match = re.fullmatch(r"/api/novels/([^/]+)/chapters/(\d+)/edit-draft", path)
+            if match:
+                self.context.service.discard_chapter_edit_draft(
+                    match.group(1), int(match.group(2))
+                )
+                self._send_json({"deleted": True})
+                return
+            match = re.fullmatch(r"/api/assistant/sessions/([^/]+)", path)
+            if match:
+                self.context.service.delete_assistant_session(match.group(1))
+                self._send_json({"deleted": True, "session_id": match.group(1)})
+                return
             match = re.fullmatch(r"/api/novels/([^/]+)", path)
             if not match:
                 self._send_json(
@@ -406,8 +538,11 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
             target = self.context.web_root / "index.html"
         body = target.read_bytes()
         self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", mimetypes.guess_type(target.name)[0] or "application/octet-stream")
+        content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if target.suffix.lower() in {".js", ".css", ".html"}:
+            self.send_header("Cache-Control", "no-store, max-age=0")
         self.end_headers()
         self.wfile.write(body)
 
@@ -429,6 +564,21 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
             status = HTTPStatus.UNPROCESSABLE_ENTITY
             error = "VALIDATION_ERROR"
             details = exc.errors(include_url=False)
+        elif isinstance(exc, ChapterNotEditableError):
+            status = HTTPStatus.CONFLICT
+            error = "CHAPTER_NOT_EDITABLE"
+        elif isinstance(exc, EditConflictError):
+            status = HTTPStatus.CONFLICT
+            error = "EDIT_CONFLICT"
+        elif isinstance(exc, AssistantChangeStaleError):
+            status = HTTPStatus.CONFLICT
+            error = "ASSISTANT_CHANGE_STALE"
+        elif isinstance(exc, AssistantChangeStateError):
+            status = HTTPStatus.CONFLICT
+            error = "ASSISTANT_CHANGE_STATE"
+        elif isinstance(exc, RevisionAnalysisError):
+            status = HTTPStatus.UNPROCESSABLE_ENTITY
+            error = "REVISION_ANALYSIS_FAILED"
         elif isinstance(exc, RequirementConflict):
             status = HTTPStatus.CONFLICT
             error = "REQUIREMENT_CONFLICT"

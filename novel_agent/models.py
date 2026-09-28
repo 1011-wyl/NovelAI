@@ -404,3 +404,146 @@ class WorkflowResult(StrictModel):
     chapter: ChapterRecord
     review: ReviewReport
     events: list[RunEvent]
+
+
+# --- Reading / revision workspace (SCHEMA 5) ---
+
+
+class AssistantMode(StrEnum):
+    ADVISOR = "advisor"
+    COAUTHOR = "coauthor"
+    EDITOR = "editor"
+
+
+class AssistantChangeStatus(StrEnum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    REVERTED = "REVERTED"
+
+
+class ChapterEditDraft(StrictModel):
+    chapter_id: str
+    project_id: str
+    base_version: int
+    title: str
+    content: str
+    source: Literal["manual", "ai", "mixed", "rollback"]
+    applied_change_ids: list[str] = Field(default_factory=list)
+    content_hash: str
+    created_at: str
+    updated_at: str
+
+
+class ChapterDraftUpdate(StrictModel):
+    base_version: int
+    title: str = Field(min_length=1, max_length=120)
+    content: str = Field(min_length=1, max_length=100_000)
+    expected_draft_hash: str | None = None
+
+
+class ChapterSelection(StrictModel):
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+    text: str = Field(min_length=1, max_length=8_000)
+    chapter_version: int = Field(ge=1)
+    draft_hash: str
+
+    @model_validator(mode="after")
+    def end_after_start(self) -> ChapterSelection:
+        if self.end <= self.start:
+            raise ValueError("selection.end must be greater than selection.start")
+        return self
+
+
+class AssistantMessageCreate(StrictModel):
+    content: str = Field(min_length=1, max_length=8_000)
+    mode: AssistantMode
+    selection: ChapterSelection | None = None
+    quick_action: Literal["polish", "shorten", "expand", "visualize", "dialogue"] | None = None
+
+
+class AssistantEditProposal(StrictModel):
+    operation: Literal["edit_chapter", "rewrite_chapter"]
+    title: str = Field(min_length=1, max_length=120)
+    content: str = Field(min_length=1, max_length=100_000)
+    explanation: str = Field(default="", max_length=2_000)
+
+
+class AssistantGatewayResponse(StrictModel):
+    message: str
+    proposal: AssistantEditProposal | None = None
+
+
+class WorldFactUpdate(StrictModel):
+    category: str = Field(min_length=1, max_length=80)
+    statement: str = Field(min_length=1, max_length=1_000)
+
+
+class ChapterRevisionAnalysis(StrictModel):
+    summary: str = Field(min_length=1, max_length=2_000)
+    timeline_event: str = Field(min_length=1, max_length=1_000)
+    character_updates: list[CharacterMemoryUpdate] = Field(default_factory=list)
+    world_facts: list[WorldFactUpdate] = Field(default_factory=list)
+    introduced_foreshadows: list[str] = Field(default_factory=list)
+    resolved_foreshadows: list[str] = Field(default_factory=list)
+
+
+class AssistantSession(StrictModel):
+    id: str
+    project_id: str
+    chapter_id: str
+    title: str
+    created_at: str
+    updated_at: str
+    deleted_at: str | None = None
+
+
+class AssistantMessage(StrictModel):
+    id: str
+    session_id: str
+    sequence: int
+    role: Literal["user", "assistant"]
+    mode: AssistantMode
+    content: str
+    selection: ChapterSelection | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+
+
+class AssistantChangeSet(StrictModel):
+    id: str
+    session_id: str
+    message_id: str
+    chapter_id: str
+    operation: Literal["edit_chapter", "rewrite_chapter"]
+    base_version: int
+    base_draft_hash: str
+    before_title: str
+    before_content: str
+    after_title: str
+    after_content: str
+    diff_json: dict[str, Any] = Field(default_factory=dict)
+    explanation: str = ""
+    status: AssistantChangeStatus
+    created_at: str
+    decided_at: str | None = None
+    reverted_at: str | None = None
+
+
+class ChapterRevisionCommitRequest(StrictModel):
+    base_version: int
+    expected_draft_hash: str = Field(min_length=1)
+
+
+class AssistantRollbackRequest(StrictModel):
+    to_message_id: str = Field(min_length=1)
+    expected_draft_hash: str = Field(min_length=1)
+
+
+class ChapterRevisionResult(StrictModel):
+    chapter: ChapterRecord
+    reset_chapters: list[int] = Field(default_factory=list)
+    memory_changes: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    semantic_index_status: str = "unchanged"

@@ -11,6 +11,7 @@ from novel_agent.adapters import (
     LLMGateway,
     SearchAdapter,
 )
+from novel_agent.chapter_workspace import ChapterWorkspaceMixin
 from novel_agent.memory_manager import MemoryManager
 from novel_agent.models import (
     BriefRegenerateRequest,
@@ -36,7 +37,7 @@ from novel_agent.workflow import ChapterWorkflow
 
 
 @dataclass(slots=True)
-class NovelAgentService:
+class NovelAgentService(ChapterWorkspaceMixin):
     repository: SQLiteRepository
     gateway: LLMGateway
     search: SearchAdapter

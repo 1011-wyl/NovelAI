@@ -983,20 +983,29 @@
   }
 
   function syncWritingFilterInputs() {
-    $("#writingProjectFilter").value = state.filters.writingProjectId;
-    $("#writingStartDate").value = state.filters.writingStartDate;
-    $("#writingEndDate").value = state.filters.writingEndDate;
+    const project = $("#writingProjectFilter");
+    const start = $("#writingStartDate");
+    const end = $("#writingEndDate");
+    if (project) project.value = state.filters.writingProjectId;
+    if (start) start.value = state.filters.writingStartDate;
+    if (end) end.value = state.filters.writingEndDate;
   }
 
   function syncRecordsFilterInputs() {
-    $("#recordsProjectFilter").value = state.filters.recordsProjectId;
-    $("#recordsModelFilter").value = state.filters.recordsModelId;
-    $("#recordsProviderFilter").value = state.filters.recordsProvider;
-    $("#recordsCategoryFilter").value = state.filters.recordsCategory;
-    $("#recordsStatusFilter").value = state.filters.recordsStatus;
-    $("#recordsStartDate").value = state.filters.recordsStartDate;
-    $("#recordsEndDate").value = state.filters.recordsEndDate;
-    $("#recordsSearch").value = state.filters.recordsSearch;
+    const map = {
+      recordsProjectFilter: "recordsProjectId",
+      recordsModelFilter: "recordsModelId",
+      recordsProviderFilter: "recordsProvider",
+      recordsCategoryFilter: "recordsCategory",
+      recordsStatusFilter: "recordsStatus",
+      recordsStartDate: "recordsStartDate",
+      recordsEndDate: "recordsEndDate",
+      recordsSearch: "recordsSearch",
+    };
+    Object.entries(map).forEach(([id, key]) => {
+      const el = $(`#${id}`);
+      if (el) el.value = state.filters[key];
+    });
   }
 
   function resetWritingFilters() {

@@ -45,11 +45,40 @@ function switchView(view) {
   if (previous === "analytics" && view !== "analytics") window.NovelDashboard?.deactivate();
   $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
   $$(".view").forEach((item) => item.classList.remove("active"));
-  $(`#${view}View`).classList.add("active");
-  $("#pageTitle").textContent = labels[view];
+  const target = $(`#${view}View`);
+  if (!target) {
+    console.error(`找不到视图：${view}View`);
+    window.__novelBasicSwitchView?.(view);
+    return;
+  }
+  target.classList.add("active");
+  if ($("#pageTitle")) $("#pageTitle").textContent = labels[view] || view;
   if (view !== "reader") $("#readerView")?.classList.remove("show-chapter");
+  $("#busy")?.classList.add("hidden");
+  placeBookPicker(view === "reader" ? "reader" : "topbar");
   if (view === "analytics") window.NovelDashboard?.activate();
   if (view === "settings") loadSettings();
+}
+window.switchView = switchView;
+window.placeBookPicker = placeBookPicker;
+
+function placeBookPicker(target) {
+  const picker = $("#bookPicker");
+  const refresh = $("#refreshButton");
+  const topActions = document.querySelector(".top-actions");
+  const readerHost = $("#readerBookPickerHost");
+  if (!picker || !topActions) return;
+  closeBookPicker();
+  if (target === "reader" && readerHost) {
+    readerHost.appendChild(picker);
+    if (refresh) readerHost.appendChild(refresh);
+  } else {
+    // Keep projectSelect (sr-only) first, then picker + refresh.
+    const select = $("#projectSelect");
+    if (select && select.parentElement !== topActions) topActions.prepend(select);
+    topActions.appendChild(picker);
+    if (refresh) topActions.appendChild(refresh);
+  }
 }
 
 function applySidebarCollapsed(collapsed) {
@@ -87,36 +116,48 @@ function wireNavigation() {
   $("#sidebarToggle")?.addEventListener("click", () => {
     applySidebarCollapsed(!$("#appShell").classList.contains("sidebar-collapsed"));
   });
-  $$(".nav-item").forEach((item) => item.addEventListener("click", () => switchView(item.dataset.view)));
+  // 侧栏页面切换已由 index.html 事件委托处理，这里不再重复绑定，避免双触发。
   $$('[data-view-jump]').forEach((item) => item.addEventListener("click", () => switchView(item.dataset.viewJump)));
-  $("#refreshButton").addEventListener("click", refresh);
-  $("#rebuildCharactersButton").addEventListener("click", rebuildCharacterArchives);
-  $("#characterBackButton").addEventListener("click", showCharacterList);
-  $("#readerBackButton")?.addEventListener("click", showReaderToc);
-  $("#projectSelect").addEventListener("change", async (event) => {
+  $("#refreshButton")?.addEventListener("click", refresh);
+  $("#rebuildCharactersButton")?.addEventListener("click", rebuildCharacterArchives);
+  $("#characterBackButton")?.addEventListener("click", showCharacterList);
+  $("#projectSelect")?.addEventListener("change", async (event) => {
     state.selectedId = event.target.value || null;
     localStorage.setItem("novelAgentProject", state.selectedId || "");
     await loadSelected();
+    renderBookPicker();
   });
-  $("#createForm").addEventListener("submit", createNovel);
+  $("#bookPickerTrigger")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleBookPicker();
+  });
+  document.addEventListener("click", (event) => {
+    const picker = $("#bookPicker");
+    if (!picker) return;
+    if (!picker.contains(event.target)) closeBookPicker();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeBookPicker();
+  });
+  $("#createForm")?.addEventListener("submit", createNovel);
   $$('#createForm input[name="audience_channel"]').forEach((input) => input.addEventListener("change", () => renderTagCatalog(input.value)));
-  $("#settingsForm").addEventListener("submit", saveSettings);
-  $("#confirmButton").addEventListener("click", () => projectAction("confirm"));
-  $("#editBriefButton").addEventListener("click", () => $("#briefEditForm").classList.toggle("hidden"));
-  $("#cancelBriefEdit").addEventListener("click", () => $("#briefEditForm").classList.add("hidden"));
-  $("#briefEditForm").addEventListener("submit", saveBriefEdit);
-  $("#regenerateBriefButton").addEventListener("click", () => regenerateBrief({ feedback: "", sections: [] }));
-  $("#feedbackRegenerateButton").addEventListener("click", regenerateBriefFromFeedback);
-  $("#deleteDraftButton").addEventListener("click", deleteProject);
-  $("#briefVersionLeft").addEventListener("change", renderBriefComparison);
-  $("#briefVersionRight").addEventListener("change", renderBriefComparison);
-  $("#restoreBriefVersion").addEventListener("click", restoreBriefVersion);
-  $("#recoverButton").addEventListener("click", () => projectAction("recover"));
-  $("#pauseButton").addEventListener("click", () => {
+  $("#settingsForm")?.addEventListener("submit", saveSettings);
+  $("#confirmButton")?.addEventListener("click", () => projectAction("confirm"));
+  $("#editBriefButton")?.addEventListener("click", () => $("#briefEditForm")?.classList.toggle("hidden"));
+  $("#cancelBriefEdit")?.addEventListener("click", () => $("#briefEditForm")?.classList.add("hidden"));
+  $("#briefEditForm")?.addEventListener("submit", saveBriefEdit);
+  $("#regenerateBriefButton")?.addEventListener("click", () => regenerateBrief({ feedback: "", sections: [] }));
+  $("#feedbackRegenerateButton")?.addEventListener("click", regenerateBriefFromFeedback);
+  $("#deleteDraftButton")?.addEventListener("click", deleteProject);
+  $("#briefVersionLeft")?.addEventListener("change", renderBriefComparison);
+  $("#briefVersionRight")?.addEventListener("change", renderBriefComparison);
+  $("#restoreBriefVersion")?.addEventListener("click", restoreBriefVersion);
+  $("#recoverButton")?.addEventListener("click", () => projectAction("recover"));
+  $("#pauseButton")?.addEventListener("click", () => {
     const action = state.detail?.project.status === "PAUSED" ? "resume" : "pause";
     projectAction(action);
   });
-  $("#generateButton").addEventListener("click", generateChapter);
+  $("#generateButton")?.addEventListener("click", generateChapter);
 }
 
 async function refresh() {
@@ -144,9 +185,65 @@ async function refresh() {
 
 function renderProjectSelect() {
   const select = $("#projectSelect");
+  if (!select) return;
   select.innerHTML = state.projects.length
     ? state.projects.map((p) => `<option value="${p.id}" ${p.id === state.selectedId ? "selected" : ""}>${escapeHtml(p.title)}</option>`).join("")
     : '<option value="">尚无项目</option>';
+  renderBookPicker();
+}
+
+function renderBookPicker() {
+  const label = $("#bookPickerLabel");
+  const grid = $("#bookPickerGrid");
+  if (!label || !grid) return;
+  const selected = state.projects.find((p) => p.id === state.selectedId);
+  label.textContent = selected?.title || (state.projects.length ? "选择小说" : "尚无项目");
+  if (!state.projects.length) {
+    grid.innerHTML = '<div class="book-picker-empty">暂无小说项目</div>';
+    return;
+  }
+  const coverIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 5.5C4 4.67 4.67 4 5.5 4H11v16H5.5A1.5 1.5 0 0 1 4 18.5v-13Z"/><path d="M20 5.5c0-.83-.67-1.5-1.5-1.5H13v16h5.5a1.5 1.5 0 0 0 1.5-1.5v-13Z"/></svg>`;
+  grid.innerHTML = state.projects.map((project) => `
+    <button type="button" class="book-picker-card" role="option" data-project-id="${escapeHtml(project.id)}" aria-selected="${project.id === state.selectedId ? "true" : "false"}">
+      <span class="book-picker-cover">${coverIcon}</span>
+      <span class="book-picker-title">${escapeHtml(project.title)}</span>
+    </button>
+  `).join("");
+  grid.querySelectorAll(".book-picker-card").forEach((card) => {
+    card.addEventListener("click", async () => {
+      const projectId = card.dataset.projectId;
+      closeBookPicker();
+      if (!projectId || projectId === state.selectedId) return;
+      state.selectedId = projectId;
+      localStorage.setItem("novelAgentProject", projectId);
+      const select = $("#projectSelect");
+      if (select) select.value = projectId;
+      await loadSelected();
+    });
+  });
+}
+
+function openBookPicker() {
+  const menu = $("#bookPickerMenu");
+  const trigger = $("#bookPickerTrigger");
+  if (!menu || !trigger) return;
+  renderBookPicker();
+  menu.classList.remove("hidden");
+  trigger.setAttribute("aria-expanded", "true");
+}
+
+function closeBookPicker() {
+  const menu = $("#bookPickerMenu");
+  const trigger = $("#bookPickerTrigger");
+  if (menu) menu.classList.add("hidden");
+  if (trigger) trigger.setAttribute("aria-expanded", "false");
+}
+
+function toggleBookPicker() {
+  const menu = $("#bookPickerMenu");
+  if (!menu) return;
+  if (menu.classList.contains("hidden")) openBookPicker();
+  else closeBookPicker();
 }
 
 async function loadSelected() {
@@ -176,6 +273,7 @@ function renderEmpty() {
   $("#pauseButton").classList.add("hidden");
   ["todayCount", "reserveCount", "chapterCount"].forEach((id) => $(`#${id}`).textContent = "0");
   $("#healthScore").textContent = "--";
+  window.ReaderWorkspace?.setProject(null);
 }
 
 function renderDetail() {
@@ -381,13 +479,12 @@ function versionSource(source) {
 function renderChapters(chapters) {
   const rows = chapters.length ? chapters.slice().reverse().map((chapter) => chapterRow(chapter)).join("") : '<div class="empty">暂无章节</div>';
   $("#chapterQueue").innerHTML = rows;
-  $("#readerChapterList").innerHTML = rows;
-  $("#readerTotal").textContent = `${chapters.length} 章`;
-  $$(".chapter-row").forEach((row) => row.addEventListener("click", () => {
+  $$("#chapterQueue .chapter-row").forEach((row) => row.addEventListener("click", () => {
     const chapter = chapters.find((item) => item.id === row.dataset.chapterId);
-    void showChapterWithHistory(chapter);
+    switchView("reader");
+    window.ReaderWorkspace?.openChapter(chapter);
   }));
-  $$(".chapter-rework-button").forEach((btn) => {
+  $$("#chapterQueue .chapter-rework-button").forEach((btn) => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
       if (!state.selectedId) return;
@@ -396,7 +493,7 @@ function renderChapters(chapters) {
         `打回第 ${chapterNumber} 章重做\n\n请输入修改意见（可选）：\n例如：主角对话太生硬，需要更自然；战斗场景太短，需要扩展。\n\n此操作将重置第 ${chapterNumber} 章及之后所有章节，不可撤销。`,
         ""
       );
-      if (feedback === null) return; // user cancelled
+      if (feedback === null) return;
       try {
         busy(true);
         await api(`/api/novels/${state.selectedId}/chapters/${chapterNumber}/rework`, {
@@ -412,6 +509,7 @@ function renderChapters(chapters) {
       } catch (error) { notify(error.message, true); } finally { busy(false); }
     });
   });
+  window.ReaderWorkspace?.setProject(state.detail);
 }
 
 function chapterRow(chapter) {
@@ -982,8 +1080,17 @@ async function saveSettings(event) {
 function statusLabel(status) { return ({DRAFT:"等待方案确认",ACTIVE:"自动连载可用",PAUSED:"已暂停",HUMAN_REQUIRED:"需要人工处理",ARCHIVED:"已归档"})[status] || status; }
 
 function startApp() {
-  window.NovelDashboard?.init({ api, escapeHtml, notify });
-  boot();
+  try {
+    window.NovelDashboard?.init({ api, escapeHtml, notify });
+  } catch (error) {
+    console.error("仪表盘初始化失败", error);
+  }
+  try {
+    window.ReaderWorkspace?.init({ api, notify, busy });
+  } catch (error) {
+    console.error("阅读工作台初始化失败", error);
+  }
+  void boot().catch((error) => console.error("应用启动失败", error));
 }
 
 if (document.readyState === "loading") {

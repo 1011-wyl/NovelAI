@@ -25,11 +25,12 @@ from novel_agent.models import (
     new_id,
     utc_now,
 )
+from novel_agent.revision_store import RevisionStoreMixin
 from novel_agent.telemetry import LLMCallRecord
 from novel_agent.text_metrics import count_content_chars
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 DASHBOARD_MIGRATION_VERSION = 4
 
 _FIXED_TIMEZONES: dict[str, timezone] = {
@@ -52,7 +53,7 @@ class RepositoryError(RuntimeError):
     pass
 
 
-class SQLiteRepository:
+class SQLiteRepository(RevisionStoreMixin):
     """Authoritative local store with explicit transactions and immutable versions."""
 
     def __init__(self, path: Path):
@@ -385,6 +386,105 @@ class SQLiteRepository:
                     "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (DASHBOARD_MIGRATION_VERSION, utc_now()),
                 )
+
+            # SCHEMA 5: reading / revision workspace
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS chapter_edit_drafts (
+                    chapter_id TEXT PRIMARY KEY REFERENCES chapters(id) ON DELETE CASCADE,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    base_version INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    source TEXT NOT NULL CHECK(source IN ('manual','ai','mixed','rollback')),
+                    applied_change_ids_json TEXT NOT NULL DEFAULT '[]',
+                    content_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_chapter_edit_drafts_project
+                ON chapter_edit_drafts(project_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS assistant_sessions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    chapter_id TEXT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    deleted_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_assistant_sessions_chapter
+                ON assistant_sessions(chapter_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS assistant_messages (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL REFERENCES assistant_sessions(id) ON DELETE CASCADE,
+                    sequence INTEGER NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+                    mode TEXT NOT NULL CHECK(mode IN ('advisor','coauthor','editor')),
+                    content TEXT NOT NULL,
+                    selection_json TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    UNIQUE(session_id, sequence)
+                );
+
+                CREATE TABLE IF NOT EXISTS assistant_change_sets (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL REFERENCES assistant_sessions(id) ON DELETE CASCADE,
+                    message_id TEXT NOT NULL REFERENCES assistant_messages(id) ON DELETE CASCADE,
+                    chapter_id TEXT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+                    operation TEXT NOT NULL CHECK(operation IN ('edit_chapter','rewrite_chapter')),
+                    base_version INTEGER NOT NULL,
+                    base_draft_hash TEXT NOT NULL,
+                    before_title TEXT NOT NULL,
+                    before_content TEXT NOT NULL,
+                    after_title TEXT NOT NULL,
+                    after_content TEXT NOT NULL,
+                    diff_json TEXT NOT NULL,
+                    explanation TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL CHECK(status IN ('PENDING','APPROVED','REJECTED','REVERTED')),
+                    created_at TEXT NOT NULL,
+                    decided_at TEXT,
+                    reverted_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_assistant_changes_session
+                ON assistant_change_sets(session_id, created_at);
+                """
+            )
+            version_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(chapter_versions)").fetchall()
+            }
+            if "title" not in version_columns:
+                conn.execute("ALTER TABLE chapter_versions ADD COLUMN title TEXT")
+            if "source" not in version_columns:
+                conn.execute(
+                    "ALTER TABLE chapter_versions ADD COLUMN source TEXT NOT NULL DEFAULT 'workflow'"
+                )
+            if "is_official" not in version_columns:
+                conn.execute(
+                    "ALTER TABLE chapter_versions ADD COLUMN is_official INTEGER NOT NULL DEFAULT 0"
+                )
+            conn.execute(
+                """UPDATE chapter_versions
+                SET title=(SELECT title FROM chapters WHERE chapters.id=chapter_versions.chapter_id)
+                WHERE title IS NULL"""
+            )
+            conn.execute(
+                """UPDATE chapter_versions
+                SET is_official=1, source='agent'
+                WHERE kind='FINAL' AND (is_official=0 OR source='workflow')"""
+            )
+            conn.execute(
+                """CREATE INDEX IF NOT EXISTS idx_chapter_versions_official
+                ON chapter_versions(chapter_id, is_official, version DESC)"""
+            )
+
             conn.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (SCHEMA_VERSION, utc_now()),
@@ -724,7 +824,7 @@ class SQLiteRepository:
                 FROM chapters c
                 LEFT JOIN chapter_versions cv ON cv.id=(
                     SELECT id FROM chapter_versions
-                    WHERE chapter_id=c.id AND kind='FINAL'
+                    WHERE chapter_id=c.id AND is_official=1
                     ORDER BY version DESC LIMIT 1
                 )
                 WHERE c.project_id=? AND c.number<? AND c.status=?
@@ -911,7 +1011,8 @@ class SQLiteRepository:
         """Return immutable snapshots for one chapter, newest first."""
         with self.connection() as conn:
             rows = conn.execute(
-                """SELECT cv.version,cv.kind,cv.content,cv.metadata_json,cv.created_at
+                """SELECT cv.version,cv.kind,cv.content,cv.metadata_json,cv.created_at,
+                cv.title,cv.source,cv.is_official
                 FROM chapter_versions cv
                 JOIN chapters c ON c.id=cv.chapter_id
                 WHERE c.project_id=? AND c.number=?
@@ -922,6 +1023,9 @@ class SQLiteRepository:
             {
                 "version": row["version"],
                 "kind": row["kind"],
+                "title": row["title"],
+                "source": row["source"] or "workflow",
+                "is_official": bool(row["is_official"]),
                 "content": row["content"],
                 "metadata": json.loads(row["metadata_json"] or "{}"),
                 "created_at": row["created_at"],
@@ -961,6 +1065,11 @@ class SQLiteRepository:
 
     def save_draft_version(self, chapter_id: str, content: str, metadata: dict[str, Any]) -> int:
         with self.transaction() as conn:
+            chapter = conn.execute(
+                "SELECT title FROM chapters WHERE id=?", (chapter_id,)
+            ).fetchone()
+            if chapter is None:
+                raise RepositoryError(f"找不到章节：{chapter_id}")
             row = self._required_row(
                 conn.execute(
                     """SELECT COALESCE(MAX(version),0)+1 AS next_version
@@ -972,8 +1081,19 @@ class SQLiteRepository:
             version = int(row["next_version"])
             conn.execute(
                 """INSERT INTO chapter_versions
-                (chapter_id,version,kind,content,metadata_json,created_at) VALUES (?,?,?,?,?,?)""",
-                (chapter_id, version, "DRAFT", content, self._dump(metadata), utc_now()),
+                (chapter_id,version,kind,content,metadata_json,created_at,title,source,is_official)
+                VALUES (?,?,?,?,?,?,?,?,?)""",
+                (
+                    chapter_id,
+                    version,
+                    "DRAFT",
+                    content,
+                    self._dump(metadata),
+                    utc_now(),
+                    chapter["title"],
+                    "workflow",
+                    0,
+                ),
             )
             conn.execute(
                 "UPDATE chapters SET content=?,version=?,updated_at=? WHERE id=?",
@@ -1012,7 +1132,8 @@ class SQLiteRepository:
             now = utc_now()
             conn.execute(
                 """INSERT INTO chapter_versions
-                (chapter_id,version,kind,content,metadata_json,created_at) VALUES (?,?,?,?,?,?)""",
+                (chapter_id,version,kind,content,metadata_json,created_at,title,source,is_official)
+                VALUES (?,?,?,?,?,?,?,?,?)""",
                 (
                     chapter_id,
                     version,
@@ -1027,6 +1148,9 @@ class SQLiteRepository:
                         }
                     ),
                     now,
+                    chapter["title"],
+                    "agent",
+                    1,
                 ),
             )
             conn.execute(

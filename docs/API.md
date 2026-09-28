@@ -23,6 +23,18 @@
 | POST | `/api/novels/{id}/resume` | 恢复自动写作 |
 | POST | `/api/novels/{id}/runs` | 运行 1 到 10 个连续章节工作流 |
 | POST | `/api/novels/{id}/chapters/{number}/rework` | 打回指定章节及其后续章节；请求体可包含最多 2000 字的 `feedback` |
+| GET | `/api/novels/{id}/chapters/{number}/workspace` | 阅读修订工作台聚合：正式章、工作草稿、版本、会话与下游重置范围 |
+| PUT | `/api/novels/{id}/chapters/{number}/edit-draft` | 保存工作草稿（不改正式章节）；支持乐观锁 `expected_draft_hash` |
+| DELETE | `/api/novels/{id}/chapters/{number}/edit-draft` | 放弃工作草稿 |
+| POST | `/api/novels/{id}/chapters/{number}/revisions` | 将工作草稿提交为正式修订；后续章安全重置并保留 `RESET_ARCHIVE` |
+| POST | `/api/novels/{id}/chapters/{number}/versions/{version}/restore` | 将历史版本恢复为工作草稿 |
+| GET/POST | `/api/novels/{id}/chapters/{number}/assistant/sessions` | 列出 / 创建 AI 修订会话 |
+| GET/POST | `/api/assistant/sessions/{session_id}/messages` | 列出 / 发送助手消息（编辑模式可产生待批准修改） |
+| GET | `/api/assistant/sessions/{session_id}/changes` | 会话修改集列表 |
+| POST | `/api/assistant/sessions/{session_id}/rollback` | 回滚到指定用户消息 |
+| DELETE | `/api/assistant/sessions/{session_id}` | 软删除会话 |
+| POST | `/api/assistant/changes/{change_id}/approve` | 批准修改写入工作草稿 |
+| POST | `/api/assistant/changes/{change_id}/reject` | 拒绝修改 |
 | GET | `/api/novels/{id}/chapters` | 章节列表与正文 |
 | GET | `/api/novels/{id}/characters` | 人物权威状态 |
 | POST | `/api/novels/{id}/characters/rebuild` | 扫描全部 READY 章节，重建重要人物档案并清理非重要人物；在线模式会调用大模型 |

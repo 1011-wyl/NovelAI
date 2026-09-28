@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Novel Agent 个人自主小说作者控制台">
   <title>Novel Agent · 自主作者控制台</title>
-  <link rel="stylesheet" href="/styles.css">
-  <link rel="stylesheet" href="/dashboard.css">
+  <link rel="stylesheet" href="/styles.css?v=rr4">
+  <link rel="stylesheet" href="/dashboard.css?v=rr4">
+  <link rel="stylesheet" href="/reader-workspace.css?v=rr6">
 </head>
 <body>
   <div class="shell" id="appShell">
@@ -35,12 +36,21 @@
     <div class="workspace">
       <main>
         <header class="topbar">
-          <div>
+          <div class="topbar-titles">
             <p class="eyebrow">创作工作台</p>
             <h1 id="pageTitle">创作控制台</h1>
           </div>
           <div class="top-actions">
-            <select id="projectSelect" aria-label="选择小说项目"><option value="">尚无项目</option></select>
+            <div class="book-picker" id="bookPicker">
+              <button type="button" class="book-picker-trigger" id="bookPickerTrigger" aria-haspopup="listbox" aria-expanded="false" aria-label="选择小说项目">
+                <span class="book-picker-label" id="bookPickerLabel">尚无项目</span>
+                <svg class="book-picker-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <div class="book-picker-menu hidden" id="bookPickerMenu" role="listbox" aria-label="小说项目列表">
+                <div class="book-picker-grid" id="bookPickerGrid"></div>
+              </div>
+            </div>
+            <select id="projectSelect" class="sr-only" aria-hidden="true" tabindex="-1"><option value="">尚无项目</option></select>
             <button id="refreshButton" class="icon-button" title="刷新" aria-label="刷新">↻</button>
           </div>
         </header>
@@ -170,13 +180,7 @@
           </form>
         </section>
 
-        <section id="readerView" class="view reader-layout">
-          <aside class="panel chapter-nav"><div class="panel-head"><h3>目录</h3><span id="readerTotal" class="badge">0 章</span></div><div id="readerChapterList" class="chapter-list"><div class="empty">暂无章节</div></div></aside>
-          <article class="panel reader-paper">
-            <button id="readerBackButton" class="text-button reader-back-button" type="button">← 返回目录</button>
-            <div id="readerContent" class="empty">选择一个 READY 章节开始阅读。</div>
-          </article>
-        </section>
+        <section id="readerView" class="view writing-workspace"></section>
 
         <section id="memoryView" class="view">
           <article class="panel character-library"><div class="panel-head"><div><h3>重要人物档案库</h3><p class="panel-subtitle">选择人物查看背景、目标、知识与关系</p></div><div class="panel-actions"><span id="characterCount" class="badge">0 人</span><button id="rebuildCharactersButton" class="text-button" type="button">重建重要人物档案</button></div></div><div id="characterBrowser" class="character-browser"><aside class="character-list-pane"><div id="characterList" class="character-list"><div class="empty">暂无人物</div></div></aside><section class="character-detail-pane"><button id="characterBackButton" class="text-button character-back-button" type="button">← 返回人物列表</button><div id="characterDetail"><div class="empty">请选择人物</div></div></section></div></article>
@@ -323,7 +327,50 @@
     </div>
   </div>
   <div id="busy" class="busy hidden"><div class="spinner"></div><strong>智能体正在工作</strong><span>规划、写作和审核可能需要一点时间</span></div>
-  <script src="/dashboard.js"></script>
-  <script src="/app.js"></script>
+  <script>
+    /* 尽早绑定侧栏导航，避免后续模块初始化失败导致整站无法切换页面 */
+    (function () {
+      var LABELS = {
+        dashboard: "创作控制台",
+        create: "创建小说",
+        reader: "作品阅读",
+        memory: "长期记忆",
+        analytics: "仪表盘",
+        settings: "系统设置",
+      };
+      function basicSwitch(view) {
+        if (!view) return;
+        document.querySelectorAll(".nav-item").forEach(function (item) {
+          item.classList.toggle("active", item.getAttribute("data-view") === view);
+        });
+        document.querySelectorAll(".view").forEach(function (item) {
+          item.classList.remove("active");
+        });
+        var target = document.getElementById(view + "View");
+        if (target) target.classList.add("active");
+        var title = document.getElementById("pageTitle");
+        if (title) title.textContent = LABELS[view] || view;
+        if (view !== "reader") {
+          var reader = document.getElementById("readerView");
+          if (reader) reader.classList.remove("show-chapter");
+        }
+        document.getElementById("busy")?.classList.add("hidden");
+      }
+      window.__novelBasicSwitchView = basicSwitch;
+      document.addEventListener("click", function (event) {
+        var btn = event.target.closest(".nav-item[data-view]");
+        if (!btn) return;
+        var view = btn.getAttribute("data-view");
+        if (typeof window.switchView === "function") {
+          window.switchView(view);
+        } else {
+          basicSwitch(view);
+        }
+      });
+    })();
+  </script>
+  <script src="/dashboard.js?v=rr4"></script>
+  <script src="/reader-workspace.js?v=rr6"></script>
+  <script src="/app.js?v=rr4"></script>
 </body>
 </html>

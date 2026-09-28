@@ -17,9 +17,18 @@ from novel_agent.models import (
     CreativeBrief,
     NovelCreateRequest,
     PlanCandidateEvaluation,
+    ProjectRecord,
+    ChapterRecord,
     ReadabilityContext,
     ReviewDecision,
     ReviewReport,
+    WorldFactRecord,
+    AssistantMode,
+    AssistantGatewayResponse,
+    AssistantEditProposal,
+    ChapterSelection,
+    ChapterRevisionAnalysis,
+    WorldFactUpdate,
 )
 
 
@@ -115,6 +124,32 @@ class LLMGateway(Protocol):
 
     def review_readability(self, context: ReadabilityContext) -> ReviewReport: ...
 
+    def respond_to_chapter_assistant(
+        self,
+        *,
+        mode: AssistantMode,
+        user_message: str,
+        selection: ChapterSelection | None,
+        project: ProjectRecord,
+        chapter: ChapterRecord,
+        working_title: str,
+        working_content: str,
+        recent_summaries: list[str],
+        characters: list[CharacterRecord],
+        world_facts: list[WorldFactRecord],
+        timeline: list[dict[str, object]],
+    ) -> AssistantGatewayResponse: ...
+
+    def analyze_chapter_revision(
+        self,
+        *,
+        project: ProjectRecord,
+        chapter: ChapterRecord,
+        title: str,
+        content: str,
+        characters: list[CharacterRecord],
+    ) -> ChapterRevisionAnalysis: ...
+
 
 class SearchAdapter(Protocol):
     name: str
@@ -209,6 +244,12 @@ class DisabledRemoteGateway:
         self._blocked()
 
     def review_readability(self, *args: object, **kwargs: object) -> ReviewReport:
+        self._blocked()
+
+    def respond_to_chapter_assistant(self, *args: object, **kwargs: object) -> AssistantGatewayResponse:
+        self._blocked()
+
+    def analyze_chapter_revision(self, *args: object, **kwargs: object) -> ChapterRevisionAnalysis:
         self._blocked()
 
 
@@ -675,6 +716,89 @@ class OfflineLLMGateway:
                 "新增信息被标明来源，尚未确认的判断没有写入正式结论。"
             )
         return revised
+
+    def respond_to_chapter_assistant(
+        self,
+        *,
+        mode: AssistantMode,
+        user_message: str,
+        selection: ChapterSelection | None,
+        project: ProjectRecord,
+        chapter: ChapterRecord,
+        working_title: str,
+        working_content: str,
+        recent_summaries: list[str],
+        characters: list[CharacterRecord],
+        world_facts: list[WorldFactRecord],
+        timeline: list[dict[str, object]],
+    ) -> AssistantGatewayResponse:
+        _ = (project, recent_summaries, characters, world_facts, timeline)
+        title = working_title or chapter.title
+        if mode == AssistantMode.ADVISOR:
+            return AssistantGatewayResponse(
+                message=(
+                    f"关于《{title}》第{chapter.number}章：当前正文约 {len(working_content)} 字。"
+                    f"建议优先核对人物动机与场景因果。你的问题是：{user_message[:120]}"
+                ),
+                proposal=None,
+            )
+        if mode == AssistantMode.COAUTHOR:
+            return AssistantGatewayResponse(
+                message=(
+                    "共创候选：\n"
+                    "1. 强化开场压力，让对手的目标更早表露。\n"
+                    "2. 把关键信息改由对白带出，减少说明性叙述。\n"
+                    "3. 结尾留下可验证的下一步行动，而不是情绪总结。"
+                ),
+                proposal=None,
+            )
+        # editor
+        if selection is not None:
+            chars = list(working_content)
+            before = "".join(chars[: selection.start])
+            after = "".join(chars[selection.end :])
+            replacement = f"【润色】{selection.text}【/润色】"
+            new_content = before + replacement + after
+            return AssistantGatewayResponse(
+                message="已生成选区修改提案，请确认后再写入工作草稿。",
+                proposal=AssistantEditProposal(
+                    operation="edit_chapter",
+                    title=title,
+                    content=new_content,
+                    explanation="对选区做了确定性润色标记，便于离线测试。",
+                ),
+            )
+        suffix = "\n\n（离线修订）按作者意见补充了行动依据与可验证细节。"
+        return AssistantGatewayResponse(
+            message="已生成全文修订提案，请确认后再写入工作草稿。",
+            proposal=AssistantEditProposal(
+                operation="rewrite_chapter",
+                title=title,
+                content=working_content.rstrip() + suffix,
+                explanation="无选区时执行简单全文修订后缀。",
+            ),
+        )
+
+    def analyze_chapter_revision(
+        self,
+        *,
+        project: ProjectRecord,
+        chapter: ChapterRecord,
+        title: str,
+        content: str,
+        characters: list[CharacterRecord],
+    ) -> ChapterRevisionAnalysis:
+        _ = project
+        lead = characters[0].name if characters else "主角"
+        summary = f"第{chapter.number}章《{title}》修订后，{lead}推进了当前目标（离线分析）。"
+        return ChapterRevisionAnalysis(
+            summary=summary[:2000],
+            timeline_event=f"第{chapter.number}章：{title}相关事件更新",
+            character_updates=[],
+            world_facts=[],
+            introduced_foreshadows=[],
+            resolved_foreshadows=[],
+        )
 
     @staticmethod
     def _protagonist_name(request: NovelCreateRequest) -> str:
