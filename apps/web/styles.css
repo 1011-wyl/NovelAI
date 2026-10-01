@@ -233,10 +233,10 @@ nav[aria-label="主导航"] {
 .workspace > main {
   min-width: 0;
   overflow: auto;
-  padding: var(--ui-space-6) var(--ui-space-8) var(--ui-space-6);
-  max-width: 1280px;
+  padding: var(--ui-space-6) var(--ui-space-6) var(--ui-space-6);
+  max-width: none;
   width: 100%;
-  margin: 0 auto;
+  margin: 0;
 }
 
 .status-bar {
@@ -1691,16 +1691,23 @@ legend {
 }
 
 @media (max-width: 767px) {
+  html,
+  body {
+    overflow-x: hidden;
+  }
   .shell {
     display: flex;
     flex-direction: column;
     min-height: 100vh;
+    max-width: 100%;
+    overflow-x: hidden;
   }
   .sidebar {
     position: sticky;
     top: 0;
     height: auto;
     width: 100%;
+    max-width: 100%;
     border-right: 0;
     border-bottom: 1px solid var(--ui-border);
     padding: var(--ui-space-2);
@@ -1708,6 +1715,8 @@ legend {
     align-items: center;
     gap: var(--ui-space-2);
     z-index: 6;
+    min-width: 0;
+    box-sizing: border-box;
   }
   .sidebar-head {
     padding: 0;
@@ -1717,9 +1726,10 @@ legend {
   .brand { display: none; }
   nav[aria-label="主导航"] {
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 2px;
     width: 100%;
+    min-width: 0;
     padding: 0;
   }
   .sidebar-foot {
@@ -1729,17 +1739,27 @@ legend {
     flex-direction: column;
     justify-content: center;
     gap: 2px;
+    width: 100%;
+    min-width: 0;
+    height: auto;
     min-height: 52px;
     padding: 6px 2px;
     font-size: 11px;
   }
-  .nav-item .nav-icon { font-size: 16px; }
+  .nav-item .nav-icon {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
+    font-size: 16px;
+  }
   .nav-item .nav-label {
     display: block;
     font-size: 10px;
     line-height: 1.2;
     text-align: center;
+    width: 100%;
     max-width: 100%;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1747,6 +1767,8 @@ legend {
   .workspace {
     flex: 1;
     min-height: 0;
+    min-width: 0;
+    max-width: 100%;
   }
   .workspace > main { padding: var(--ui-space-4) var(--ui-space-3) var(--ui-space-6); }
   .topbar {

@@ -40,9 +40,11 @@ function notify(message, error = false) {
 
 function busy(show) { $("#busy").classList.toggle("hidden", !show); }
 
+let analyticsView = null;
+
 function switchView(view) {
   const previous = $$(".nav-item.active")[0]?.dataset.view;
-  if (previous === "analytics" && view !== "analytics") window.NovelDashboard?.deactivate();
+  if (previous === "analytics" && view !== "analytics") analyticsView?.deactivate();
   $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
   $$(".view").forEach((item) => item.classList.remove("active"));
   const target = $(`#${view}View`);
@@ -56,7 +58,7 @@ function switchView(view) {
   if (view !== "reader") $("#readerView")?.classList.remove("show-chapter");
   $("#busy")?.classList.add("hidden");
   placeBookPicker(view === "reader" ? "reader" : "topbar");
-  if (view === "analytics") window.NovelDashboard?.activate();
+  if (view === "analytics") analyticsView?.activate();
   if (view === "settings") loadSettings();
 }
 window.switchView = switchView;
@@ -1079,9 +1081,11 @@ async function saveSettings(event) {
 
 function statusLabel(status) { return ({DRAFT:"等待方案确认",ACTIVE:"自动连载可用",PAUSED:"已暂停",HUMAN_REQUIRED:"需要人工处理",ARCHIVED:"已归档"})[status] || status; }
 
-function startApp() {
+async function startApp() {
   try {
-    window.NovelDashboard?.init({ api, escapeHtml, notify });
+    const { createAnalyticsView } = await import("/js/features/analytics/index.js");
+    analyticsView = createAnalyticsView({ api, notify, escapeHtml });
+    analyticsView.mount(document.querySelector("#analyticsView"));
   } catch (error) {
     console.error("仪表盘初始化失败", error);
   }

@@ -16,7 +16,7 @@ from novel_agent.models import (
 )
 
 if TYPE_CHECKING:
-    from novel_agent.adapters import LLMGateway
+    from novel_agent.ports import LLMGateway
     from novel_agent.repository import SQLiteRepository
 
 

@@ -99,7 +99,6 @@
           <button type="button" class="primary-button" id="wsCommitBtn" aria-label="应用修订">应用修订</button>
           <button type="button" class="text-button ws-overlay-toggle" id="wsOpenAssistant" aria-label="打开 AI 助手">AI</button>
         </div>
-        <div id="wsSelectionBar" class="ws-selection-bar" aria-live="polite"></div>
         <div class="ws-editor-body">
           <input id="wsTitleInput" type="text" maxlength="120" spellcheck="false" placeholder="章节标题" disabled />
           <textarea id="wsContentInput" spellcheck="false" placeholder="选择 READY 章节后开始阅读或修订。" disabled></textarea>
@@ -131,6 +130,7 @@
           </div>
         </div>
       </aside>
+      <div id="wsSelectionBar" class="ws-selection-menu" role="menu" aria-label="选区优化" hidden></div>
       <div id="wsDialogHost"></div>
     `;
     const q = (sel) => root.querySelector(sel);
@@ -188,6 +188,13 @@
     els.content?.addEventListener("select", onSelectionChange);
     els.content?.addEventListener("keyup", onSelectionChange);
     els.content?.addEventListener("mouseup", onSelectionChange);
+    els.content?.addEventListener("contextmenu", onContentContextMenu);
+    els.content?.addEventListener("scroll", hideSelectionMenu);
+    els.selectionBar?.addEventListener("mousedown", (event) => {
+      // Keep textarea selection while clicking menu items.
+      event.preventDefault();
+    });
+    document.addEventListener("pointerdown", onDocumentPointerDown, true);
     els.commitBtn?.addEventListener("click", () => void commitRevision());
     els.discardBtn?.addEventListener("click", () => void discardDraft());
     els.versionsBtn?.addEventListener("click", () => void showVersions());
@@ -209,6 +216,7 @@
       }
     });
     document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") hideSelectionMenu();
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
         if (!els.root?.classList.contains("active")) return;
         event.preventDefault();
@@ -290,6 +298,7 @@
     state.changes = [];
     state.selection = null;
     state.pendingRef = null;
+    hideSelectionMenu();
     renderChapterList();
     resetEditor();
     const last = Number(localStorage.getItem(`${STORAGE_KEYS.lastChapter}:${state.projectId}`) || 0);
@@ -500,53 +509,79 @@
     }
   }
 
-  function onSelectionChange() {
-    if (els.content.readOnly) {
-      state.selection = null;
-      renderSelectionBar();
-      return;
-    }
+  function captureSelection() {
+    if (!els.content || els.content.readOnly) return null;
     const start16 = els.content.selectionStart || 0;
     const end16 = els.content.selectionEnd || 0;
-    if (end16 <= start16) {
-      state.selection = null;
-      renderSelectionBar();
-      updateCounts();
-      return;
-    }
+    if (end16 <= start16) return null;
     const value = normalizeNewlines(els.content.value);
     const start = toCodePointOffset(value, start16);
     const end = toCodePointOffset(value, end16);
     const text = Array.from(value).slice(start, end).join("");
-    if (!text.trim()) {
-      state.selection = null;
-      renderSelectionBar();
-      updateCounts();
-      return;
-    }
-    state.selection = { start, end, text };
-    renderSelectionBar();
+    if (!text.trim()) return null;
+    return { start, end, text };
+  }
+
+  function onSelectionChange() {
+    state.selection = captureSelection();
+    if (!state.selection) hideSelectionMenu();
     updateCounts();
   }
 
-  function renderSelectionBar() {
+  function onContentContextMenu(event) {
+    state.selection = captureSelection();
+    updateCounts();
     if (!state.selection) {
-      els.selectionBar.classList.remove("visible");
-      els.selectionBar.innerHTML = "";
+      hideSelectionMenu();
       return;
     }
+    event.preventDefault();
+    showSelectionMenu(event.clientX, event.clientY);
+  }
+
+  function onDocumentPointerDown(event) {
+    if (!els.selectionBar || els.selectionBar.hidden) return;
+    if (els.selectionBar.contains(event.target)) return;
+    hideSelectionMenu();
+  }
+
+  function hideSelectionMenu() {
+    if (!els.selectionBar) return;
+    els.selectionBar.hidden = true;
+    els.selectionBar.classList.remove("visible");
+    els.selectionBar.innerHTML = "";
+  }
+
+  function showSelectionMenu(clientX, clientY) {
+    if (!els.selectionBar || !state.selection) return;
     const n = countChars(state.selection.text);
-    els.selectionBar.classList.add("visible");
     els.selectionBar.innerHTML = `
-      <span>已选择 ${n} 字</span>
+      <div class="ws-selection-menu-label">已选择 ${n} 字</div>
       ${Object.entries(QUICK_LABELS)
-        .map(([key, label]) => `<button type="button" class="text-button" data-quick="${key}">${label}</button>`)
+        .map(([key, label]) => `<button type="button" class="ws-selection-menu-item" role="menuitem" data-quick="${key}">${label}</button>`)
         .join("")}
-      <button type="button" class="text-button" data-quick="attach">加入对话</button>
+      <button type="button" class="ws-selection-menu-item" role="menuitem" data-quick="attach">加入对话</button>
     `;
     els.selectionBar.querySelectorAll("[data-quick]").forEach((btn) => {
-      btn.addEventListener("click", () => void handleQuick(btn.dataset.quick));
+      btn.addEventListener("click", () => {
+        hideSelectionMenu();
+        void handleQuick(btn.dataset.quick);
+      });
     });
+    const pad = 8;
+    els.selectionBar.style.left = `${clientX + 4}px`;
+    els.selectionBar.style.top = `${clientY + 4}px`;
+    els.selectionBar.hidden = false;
+    els.selectionBar.classList.add("visible");
+    const rect = els.selectionBar.getBoundingClientRect();
+    let left = clientX + 4;
+    let top = clientY + 4;
+    if (left + rect.width > window.innerWidth - pad) left = Math.max(pad, window.innerWidth - rect.width - pad);
+    if (top + rect.height > window.innerHeight - pad) top = Math.max(pad, clientY - rect.height - 4);
+    if (left < pad) left = pad;
+    if (top < pad) top = pad;
+    els.selectionBar.style.left = `${left}px`;
+    els.selectionBar.style.top = `${top}px`;
   }
 
   async function handleQuick(action) {

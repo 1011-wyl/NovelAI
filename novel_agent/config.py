@@ -78,11 +78,18 @@ class Settings:
         llm_api_key = os.getenv("LLM_API_KEY") or None
         if llm_provider == "deepseek":
             llm_api_key = llm_api_key or os.getenv("DEEPSEEK_API_KEY") or None
+        elif llm_provider in {"dashscope", "qwen"}:
+            llm_api_key = llm_api_key or os.getenv("DASHSCOPE_API_KEY") or None
         llm_base_url = os.getenv("LLM_BASE_URL") or None
         llm_model = os.getenv("LLM_MODEL") or None
         if llm_provider == "deepseek":
             llm_base_url = llm_base_url or "https://api.deepseek.com"
             llm_model = llm_model or "deepseek-v4-pro"
+        elif llm_provider in {"dashscope", "qwen"}:
+            llm_base_url = (
+                llm_base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            )
+            llm_model = llm_model or "qwen3.7-plus"
         search_provider = os.getenv("SEARCH_PROVIDER", "disabled").lower()
         search_base_url = os.getenv("SEARCH_BASE_URL") or None
         if search_provider == "tavily":

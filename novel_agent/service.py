@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from novel_agent.adapters import (
-    DisabledEmbeddingGateway,
-    DisabledSearchAdapter,
-    EmbeddingGateway,
-    LLMGateway,
-    SearchAdapter,
-)
+from novel_agent.integrations.embedding.disabled import DisabledEmbeddingGateway
+from novel_agent.integrations.search.disabled import DisabledSearchAdapter
+from novel_agent.ports import EmbeddingGateway, LLMGateway, SearchAdapter
 from novel_agent.chapter_workspace import ChapterWorkspaceMixin
+from novel_agent.features.analytics.service import AnalyticsService
 from novel_agent.memory_manager import MemoryManager
 from novel_agent.models import (
     BriefRegenerateRequest,
@@ -225,33 +221,9 @@ class NovelAgentService(ChapterWorkspaceMixin):
     def get_token_statistics(
         self, start_date: str, end_date: str
     ) -> dict[str, Any]:
-        stats = self.repository.get_token_statistics(start_date, end_date)
-        summary = self.repository.get_token_daily_summary(
+        return AnalyticsService(self.repository.analytics).get_token_statistics(
             start_date, end_date
         )
-        today = time.strftime("%Y-%m-%d")
-        today_summary = self.repository.get_token_daily_summary(
-            today, today
-        )
-        max_date = ""
-        max_tokens = 0
-        for i, d in enumerate(stats["dates"]):
-            if stats["total_tokens"][i] > max_tokens:
-                max_tokens = stats["total_tokens"][i]
-                max_date = d
-        avg_daily = (
-            summary["total_tokens"] // max(summary["days"], 1)
-        )
-        return {
-            **stats,
-            "today_tokens": today_summary["total_tokens"],
-            "period_tokens": summary["total_tokens"],
-            "avg_daily": avg_daily,
-            "max_date": max_date,
-            "max_tokens": max_tokens,
-            "total_calls": summary["total_calls"],
-            "total_retries": summary["total_retries"],
-        }
 
     def pause_novel(self, project_id: str) -> ProjectRecord:
         return self.repository.update_project_status(project_id, ProjectStatus.PAUSED)

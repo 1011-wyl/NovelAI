@@ -1,7 +1,7 @@
 # Novel Agent 使用手册
 
 > 适用项目版本：0.1.x  
-> 最后更新：2026-09-28
+> 最后更新：2026-10-01
 
 Novel Agent 是一个个人使用的长篇小说创作智能体。它可以根据频道、题材、标签和核心想法生成创作方案，再逐章执行单次精简细纲、上一章正文接续、题材写法校准、必要的现实知识调研、正文写作、oh-story 去 AI 味、八维可读性审稿、Story Skills 一致性审校、修订、人物记忆更新和章节储备。
 
@@ -14,11 +14,11 @@ Novel Agent 是一个个人使用的长篇小说创作智能体。它可以根�
 | 模式 | 用途 | 是否调用外部服务 | 创作质量 |
 |---|---|---|---|
 | 离线模式 | 验证页面、数据库和完整工作流 | 否 | 仅用于工程演示 |
-| 在线模式 | 使用 DeepSeek 进行真实方案、规划、写作和修订 | 是 | 日常创作应使用此模式 |
+| 在线模式 | 使用已配置的大模型（DeepSeek、通义千问等 OpenAI 兼容接口）进行真实方案、规划、写作和修订 | 是 | 日常创作应使用此模式 |
 
-离线生成器的内容是确定性的测试文本，不适合作为正式小说正文。要获得真实创作质量，需要配置 DeepSeek API。
+离线生成器的内容是确定性的测试文本，不适合作为正式小说正文。要获得真实创作质量，需要配置可用的在线模型 API。
 
-仓库中的 `.env.example` 使用离线模式，表示新复制项目在没有本地配置时不会调用外部服务。这只是安全初始值，不代表本机始终离线。当前 `D:\NovelAgent` 项目已通过 `.env.local` 启用 DeepSeek 在线模式；生成方案或章节等模型操作会使用已配置的 API Key。实际运行状态以页面左下角和“系统设置”中的 LLM 状态为准。
+仓库中的 `.env.example` 使用离线模式，表示新复制项目在没有本地配置时不会调用外部服务。这只是安全初始值，不代表本机始终离线。实际运行状态以页面左下角和“系统设置”中的 LLM 状态为准。
 
 ### 1.2 当前不会自动做的事情
 
@@ -79,17 +79,19 @@ http://127.0.0.1:8000
 
 仅刷新页面不能替换已经加载到旧 Python 进程中的后端代码。
 
-## 3. 配置 DeepSeek
+## 3. 配置在线大模型
 
 ### 3.1 创建本地配置文件
 
-如果还没有 `.env.local`，可以复制示例文件：
+如果还没有 `.env` 或 `.env.local`，可以复制示例文件：
 
 ```powershell
 Copy-Item .env.example .env.local
 ```
 
-在 `.env.local` 中填写：
+程序会先读 `.env`，再读 `.env.local`（后者不覆盖已在环境中存在的变量）。推荐把真实密钥放在本机 `.env` / `.env.local`，不要提交到版本库。
+
+#### DeepSeek 示例
 
 ```env
 NOVEL_AGENT_MODE=online
@@ -101,18 +103,47 @@ LLM_TIMEOUT_SECONDS=120
 LLM_MAX_RETRIES=2
 ```
 
-也可以使用 `DEEPSEEK_API_KEY` 代替 `LLM_API_KEY`。`LLM_MODEL` 必须填写你的 DeepSeek 账号当前有权调用的模型名称。
+也可以使用 `DEEPSEEK_API_KEY` 代替 `LLM_API_KEY`。
 
-保存后重启服务。左下角显示“在线模式”，系统设置中 LLM 显示已启用，说明配置已经被识别。
+#### 通义千问（阿里云百炼）示例
+
+```env
+NOVEL_AGENT_MODE=online
+LLM_PROVIDER=dashscope
+LLM_API_KEY=填写你自己的百炼密钥
+LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+LLM_MODEL=qwen3.7-plus
+LLM_TIMEOUT_SECONDS=180
+LLM_MAX_RETRIES=2
+```
+
+说明：
+
+- `LLM_PROVIDER` 也可写 `qwen`，默认与 `dashscope` 相同。
+- 也可以使用 `DASHSCOPE_API_KEY` 代替 `LLM_API_KEY`。
+- 北京地域常用 Base URL 为 `https://dashscope.aliyuncs.com/compatible-mode/v1`；国际（新加坡）为 `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`。密钥与 Base URL 必须同一地域，否则常见报错是 `invalid_api_key`。
+- 若控制台提供了业务空间专属域名，把 `LLM_BASE_URL` 换成控制台给出的 OpenAI 兼容地址（以 `/compatible-mode/v1` 结尾）。
+
+#### 其他 OpenAI 兼容接口
+
+```env
+NOVEL_AGENT_MODE=online
+LLM_PROVIDER=openai-compatible
+LLM_API_KEY=你的密钥
+LLM_BASE_URL=https://你的兼容网关/v1
+LLM_MODEL=你的模型名
+```
+
+`LLM_MODEL` 必须填写该账号当前有权调用的模型名称。保存后重启服务。左下角显示“在线模式”，系统设置中 LLM 显示已启用，说明配置已经被识别。
 
 ### 3.2 密钥安全
 
 - 不要把密钥发到聊天记录、截图或公开仓库。
 - 不要把真实密钥写进 `.env.example`、README 或源代码。
-- `.env.local` 只保存在当前电脑。
+- `.env` / `.env.local` 只保存在当前电脑。
 - 如果密钥曾经公开，立即在供应商后台撤销并重新生成。
 
-### 3.3 DeepSeek 调用发生在什么时间
+### 3.3 模型调用发生在什么时间
 
 在线模式下，以下操作会调用模型：
 
@@ -200,7 +231,7 @@ OH_STORY_ENABLED=true
 
 ## 5. 页面导航
 
-左侧是可折叠的工具侧栏（桌面默认可展开到名称，也可收成图标轨；选择会保存在本机）。底部状态条显示当前运行模式和外部能力是否启用。六个页面用途如下：
+左侧是可折叠的工具侧栏（桌面默认可展开到名称，也可收成图标轨；选择会保存在本机）。底部状态条显示当前运行模式和外部能力是否启用。创作控制台、创建小说、长期记忆等主内容区铺满侧栏右侧可用宽度，不再居中限宽。六个页面用途如下：
 
 | 页面 | 主要用途 |
 |---|---|
@@ -357,7 +388,7 @@ OH_STORY_ENABLED=true
 4. 右侧可切换顾问 / 共创 / 编辑模式，与 AI 对话；编辑模式产生的改写需**批准**后才进入工作草稿。
 5. 点击「应用修订」把工作草稿提交为新的正式版本。
 
-作品阅读页为全幅三栏工作台，不显示顶栏标题；书籍选择器位于左侧栏顶部。中间栏字数统计贴在正文区底部，右侧 AI 输入框贴在助手栏底部。
+作品阅读页为全幅三栏工作台，不显示顶栏标题；书籍选择器位于左侧栏顶部。中间栏字数统计贴在正文区底部，右侧 AI 输入框贴在助手栏底部。选中正文后需**右键**才会在指针旁弹出润色 / 精简 / 扩写等快捷菜单。
 
 ### 9.1 工作草稿与自动保存
 
@@ -565,14 +596,16 @@ python -m unittest discover -s tests -v
 
 点击“继续”后再生成章节。
 
-### 15.4 缺少 DeepSeek API Key
+### 15.4 缺少 LLM API Key
 
-检查 `.env.local`：
+检查 `.env` 或 `.env.local`：
 
 ```env
 NOVEL_AGENT_MODE=online
-LLM_PROVIDER=deepseek
+LLM_PROVIDER=dashscope
 LLM_API_KEY=你的密钥
+LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+LLM_MODEL=qwen3.7-plus
 ```
 
 修改配置后必须重启服务。
@@ -581,7 +614,8 @@ LLM_API_KEY=你的密钥
 
 - 检查密钥是否完整，前后是否有多余空格。
 - 检查密钥是否被撤销。
-- 检查 Base URL 和模型名称是否属于同一供应商。
+- 检查 Base URL 和模型名称是否属于同一供应商、同一地域（通义千问尤其常见：北京 Key 不能配国际域名）。
+- 页面若仍显示“DeepSeek …”而你实际用的是千问，请确认已重启到支持 `dashscope` / `qwen` / `openai-compatible` 的版本。
 
 ### 15.6 429 或限流
 

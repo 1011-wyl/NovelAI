@@ -43,6 +43,14 @@
   pointer-events: auto;
 }
 
+/* Selection menu is viewport-fixed and must not take a grid cell. */
+#readerView.writing-workspace > #wsSelectionBar {
+  position: fixed;
+  inset: auto;
+  z-index: 90;
+  pointer-events: auto;
+}
+
 /* Full-bleed reader page (OpenFic-like) — lock height chain so footers stick */
 .shell:has(#readerView.active) {
   height: 100vh;
@@ -262,18 +270,47 @@
 .ws-status.error,
 .ws-status.conflict { color: var(--workspace-danger); }
 
-.ws-selection-bar {
+.ws-selection-menu {
+  position: fixed;
+  z-index: 90;
   display: none;
-  gap: 8px;
-  align-items: center;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--workspace-border);
-  background: #fafaf7;
-  overflow-x: auto;
-  white-space: nowrap;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 148px;
+  max-width: min(280px, calc(100vw - 16px));
+  padding: 6px;
+  border: 1px solid var(--workspace-border);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(20, 20, 18, 0.14);
 }
 
-.ws-selection-bar.visible { display: flex; }
+.ws-selection-menu.visible {
+  display: flex;
+}
+
+.ws-selection-menu-label {
+  font-size: 11px;
+  color: var(--workspace-muted);
+  padding: 4px 8px 6px;
+}
+
+.ws-selection-menu-item {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  border-radius: 7px;
+  padding: 8px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ws-selection-menu-item:hover,
+.ws-selection-menu-item:focus-visible {
+  background: #eef3ff;
+  outline: none;
+}
 
 .ws-editor-body {
   flex: 1 1 auto;

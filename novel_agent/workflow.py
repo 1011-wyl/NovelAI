@@ -4,12 +4,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from novel_agent.adapters import (
-    DisabledEmbeddingGateway,
-    EmbeddingGateway,
-    LLMGateway,
-    SearchAdapter,
-)
+from novel_agent.integrations.embedding.disabled import DisabledEmbeddingGateway
+from novel_agent.ports import EmbeddingGateway, LLMGateway, SearchAdapter
 from novel_agent.memory_manager import MemoryManager
 from novel_agent.models import (
     ChapterPlan,

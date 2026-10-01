@@ -5,7 +5,8 @@ import unittest
 from http import HTTPStatus
 from pathlib import Path
 
-from novel_agent.adapters import DisabledSearchAdapter, OfflineLLMGateway
+from novel_agent.integrations.llm.offline import OfflineLLMGateway
+from novel_agent.integrations.search.disabled import DisabledSearchAdapter
 from novel_agent.api import AppContext, NovelAgentHandler
 from novel_agent.repository import DASHBOARD_MIGRATION_VERSION, SCHEMA_VERSION, SQLiteRepository
 from novel_agent.service import NovelAgentService

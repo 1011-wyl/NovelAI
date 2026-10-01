@@ -6,12 +6,14 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
-from novel_agent.adapters import APIConfigurationRequired, build_gateway
-from novel_agent.adapters_remote import (
-    DeepSeekLLMGateway,
+from novel_agent.adapters import build_gateway  # 兼容入口：旧工厂签名回归
+from novel_agent.integrations.errors import APIConfigurationRequired
+from novel_agent.integrations.llm.deepseek import DeepSeekLLMGateway
+from novel_agent.integrations.llm.errors import (
     LLMAuthenticationError,
     LLMResponseError,
 )
+from novel_agent.integrations.search.disabled import DisabledSearchAdapter
 from novel_agent.config import Settings
 from novel_agent.models import (
     ChapterPlan,
@@ -24,7 +26,6 @@ from novel_agent.models import (
 )
 from novel_agent.repository import SQLiteRepository
 from novel_agent.service import NovelAgentService
-from novel_agent.adapters import DisabledSearchAdapter
 
 
 def completion(content: str | None, *, finish_reason: str = "stop") -> dict:
@@ -566,6 +567,106 @@ class DeepSeekGatewayTests(unittest.TestCase):
         zhou_ning = next(item for item in characters if item.name == "周宁")
         self.assertEqual(zhou_ning.role, "ally")
         self.assertEqual(zhou_ning.current_state["last_seen_chapter"], 1)
+
+    def test_public_telemetry_kwargs_seed_private_fields(self) -> None:
+        calls: list[str] = []
+        transport = RecordingTransport([completion("完整正文")])
+        gateway = DeepSeekLLMGateway(
+            api_key="test-key",
+            transport=transport,
+            sleep=lambda _: None,
+            on_call=lambda **payload: calls.append("call"),
+            on_usage=lambda **payload: calls.append("usage"),
+        )
+        result = gateway.write_chapter(
+            self.request(),
+            CreativeBrief.model_validate(brief_payload()),
+            ChapterPlan.model_validate(plan_payload()),
+            "林川",
+            [],
+        )
+        self.assertEqual(result, "完整正文")
+        self.assertEqual(calls, ["call"])
+
+    def test_bootstrap_private_field_assignment_still_works(self) -> None:
+        saved: list[dict] = []
+        transport = RecordingTransport([completion("完整正文")])
+        gateway = self.gateway(transport)
+        gateway._on_call = lambda **payload: saved.append(payload)
+        result = gateway.write_chapter(
+            self.request(),
+            CreativeBrief.model_validate(brief_payload()),
+            ChapterPlan.model_validate(plan_payload()),
+            "林川",
+            [],
+        )
+        self.assertEqual(result, "完整正文")
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["status"], "success")
+
+    def test_public_on_usage_only_and_missing_usage_payload(self) -> None:
+        saved: list[dict] = []
+        payload = completion("完整正文")
+        del payload["usage"]
+        transport = RecordingTransport([payload])
+        gateway = DeepSeekLLMGateway(
+            api_key="test-key",
+            transport=transport,
+            sleep=lambda _: None,
+            on_usage=lambda **item: saved.append(item),
+        )
+        result = gateway.write_chapter(
+            self.request(),
+            CreativeBrief.model_validate(brief_payload()),
+            ChapterPlan.model_validate(plan_payload()),
+            "林川",
+            [],
+        )
+        self.assertEqual(result, "完整正文")
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["prompt_tokens"], 0)
+        self.assertEqual(saved[0]["completion_tokens"], 0)
+        self.assertEqual(saved[0]["total_tokens"], 0)
+
+    def test_public_callback_exception_is_swallowed(self) -> None:
+        transport = RecordingTransport([completion("完整正文")])
+
+        def boom(**payload: object) -> None:
+            raise RuntimeError("telemetry boom")
+
+        gateway = DeepSeekLLMGateway(
+            api_key="test-key",
+            transport=transport,
+            sleep=lambda _: None,
+            on_call=boom,
+        )
+        result = gateway.write_chapter(
+            self.request(),
+            CreativeBrief.model_validate(brief_payload()),
+            ChapterPlan.model_validate(plan_payload()),
+            "林川",
+            [],
+        )
+        self.assertEqual(result, "完整正文")
+
+    def test_markdown_fenced_json_is_extracted(self) -> None:
+        fenced = "```json\n" + json.dumps(brief_payload(), ensure_ascii=False) + "\n```"
+        transport = RecordingTransport([completion(fenced)])
+        brief = self.gateway(transport).create_brief(self.request())
+        self.assertEqual(brief.selected_title, "余烬仓城")
+
+    def test_json_surrounded_by_noise_is_extracted(self) -> None:
+        noisy = "说明如下：\n" + json.dumps(brief_payload(), ensure_ascii=False) + "\n结束"
+        transport = RecordingTransport([completion(noisy)])
+        brief = self.gateway(transport).create_brief(self.request())
+        self.assertEqual(brief.selected_title, "余烬仓城")
+
+    def test_deepseek_lives_only_in_integrations_module(self) -> None:
+        from novel_agent.adapters_remote import DeepSeekLLMGateway as Old  # 兼容路径 identity
+        from novel_agent.integrations.llm.deepseek import DeepSeekLLMGateway as New
+
+        self.assertIs(Old, New)
+        self.assertEqual(New.__module__, "novel_agent.integrations.llm.deepseek")
 
 
 if __name__ == "__main__":

@@ -2,20 +2,34 @@
 
 离线版已经能跑通全部状态与数据闭环，但离线生成器只用于工程验证。以下能力需要你后续选择供应商并补充信息。
 
-## 1. DeepSeek 大模型 API（已实现，真实创作必需）
+## 1. 大模型 API（已实现，真实创作必需）
 
-需要补充：
+在线模式通过 OpenAI 兼容的 Chat Completions 接口调用模型。可选供应商：
+
+### DeepSeek
 
 - `LLM_PROVIDER=deepseek`
-- `LLM_API_KEY`：密钥，写入本机 `.env.local`。
+- `LLM_API_KEY`：密钥，写入本机 `.env` / `.env.local`（也可用 `DEEPSEEK_API_KEY`）
 - `LLM_BASE_URL=https://api.deepseek.com`
 - `LLM_MODEL=deepseek-v4-pro`
 
-代码接入点：`novel_agent/adapters_remote.py` 的 `DeepSeekLLMGateway`。创作方案、情绪优先的细化章节计划、题材化正文生成、去 AI 味处理、Story Skills 一致性审校和修订已经实现；结构化结果使用 JSON Output，并由 `novel_agent/models.py` 中的 Pydantic 模型再次校验。密钥缺失、鉴权失败、限流、超时、服务端错误、空响应和截断输出都有明确错误类型。
+### 通义千问（阿里云百炼）
 
-`STORY_SKILLS_ENABLED=true` 默认启用固定的 `revision-continuity` 审校。在线模式下，初稿和每次自动修订后都会增加一次 DeepSeek 请求；设置为 `false` 并重启可以临时关闭。Story Skills 本身不需要额外 API Key。
+- `LLM_PROVIDER=dashscope`（或 `qwen`）
+- `LLM_API_KEY`：百炼密钥（也可用 `DASHSCOPE_API_KEY`）
+- `LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1`（北京）或国际域名
+- `LLM_MODEL=qwen3.7-plus`
 
-`OH_STORY_ENABLED=true` 默认启用固定版本的 oh-story `story-long-write` 与 `story-deslop`。系统会加载题材正文提示卡，并在每章初稿后增加一次 DeepSeek 去 AI 味请求；设置为 `false` 并重启可以临时关闭。oh-story 本身不需要额外 API Key，但在线模式的调用次数和费用会略有增加。
+### 其他 OpenAI 兼容网关
+
+- `LLM_PROVIDER=openai-compatible`
+- 必须同时填写 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`
+
+代码接入点：`novel_agent/integrations/llm/deepseek.py` 中的 OpenAI 兼容网关（历史类名仍为 `DeepSeekLLMGateway`）。创作方案、情绪优先的细化章节计划、题材化正文生成、去 AI 味处理、Story Skills 一致性审校和修订已经实现；结构化结果使用 JSON Output，并由 `novel_agent/models.py` 中的 Pydantic 模型再次校验。密钥缺失、鉴权失败、限流、超时、服务端错误、空响应和截断输出都有明确错误类型。
+
+`STORY_SKILLS_ENABLED=true` 默认启用固定的 `revision-continuity` 审校。在线模式下，初稿和每次自动修订后都会增加一次模型请求；设置为 `false` 并重启可以临时关闭。Story Skills 本身不需要额外 API Key。
+
+`OH_STORY_ENABLED=true` 默认启用固定版本的 oh-story `story-long-write` 与 `story-deslop`。系统会加载题材正文提示卡，并在每章初稿后增加一次去 AI 味请求；设置为 `false` 并重启可以临时关闭。oh-story 本身不需要额外 API Key，但在线模式的调用次数和费用会略有增加。
 
 ## 2. Tavily 搜索与网页阅读 API（已实现，联网研究需要）
 

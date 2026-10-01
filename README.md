@@ -2,7 +2,7 @@
 
 个人使用的自主长篇小说作者智能体。它根据标签和核心想法建立创作方案，再以独立章节工作流持续执行规划、研究判断、写作、审核、修订、记忆更新和章节储备。
 
-当前版本支持离线模式和 DeepSeek 在线模式。仓库的示例配置仍以离线模式作为安全初始值；本机项目已在 `.env.local` 中启用 DeepSeek 在线模式，因此生成创作方案、情绪细纲、正文、oh-story 去 AI 味、Story Skills 一致性审校、审核修订和重要人物档案时会调用 DeepSeek API，并发送完成该次创作所需的上下文。普通浏览页面和阅读已有正文不会调用模型。
+当前版本支持离线模式，以及 DeepSeek、通义千问等 OpenAI 兼容在线模式。仓库的示例配置仍以离线模式作为安全初始值；在本机 `.env` / `.env.local` 中启用在线模式并填写密钥后，生成创作方案、情绪细纲、正文、oh-story 去 AI 味、Story Skills 一致性审校、审核修订和重要人物档案时会调用已配置的模型 API，并发送完成该次创作所需的上下文。普通浏览页面和阅读已有正文不会调用模型。
 
 完整的安装、配置和日常操作说明见 [Novel Agent 使用手册](docs/USER_GUIDE.md)。
 
@@ -107,9 +107,9 @@ API 接入位置见 [docs/API_SETUP.md](docs/API_SETUP.md)，架构与状态边�
 
 以后新增或修改用户可见功能、操作流程、环境变量、接口、数据路径和故障处理方式时，必须在同一次更新中同步修改 [docs/USER_GUIDE.md](docs/USER_GUIDE.md)。
 
-## 启用 DeepSeek
+## 启用在线模型
 
-在不会提交到版本库的 `.env.local` 中填写：
+在不会提交到版本库的 `.env` 或 `.env.local` 中填写。DeepSeek 示例：
 
 ```env
 NOVEL_AGENT_MODE=online
@@ -117,11 +117,21 @@ LLM_PROVIDER=deepseek
 LLM_API_KEY=你的DeepSeek密钥
 LLM_BASE_URL=https://api.deepseek.com
 LLM_MODEL=deepseek-v4-pro
-STORY_SKILLS_ENABLED=true
-OH_STORY_ENABLED=true
 ```
 
-也可以使用 `DEEPSEEK_API_KEY` 代替 `LLM_API_KEY`。密钥缺失时在线模式会拒绝启动，不会静默退回离线生成器。
+通义千问示例：
+
+```env
+NOVEL_AGENT_MODE=online
+LLM_PROVIDER=dashscope
+LLM_API_KEY=你的百炼密钥
+LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+LLM_MODEL=qwen3.7-plus
+```
+
+也可用 `LLM_PROVIDER=openai-compatible` 接入其他 OpenAI 兼容网关。完整说明见 [docs/USER_GUIDE.md](docs/USER_GUIDE.md)。
+
+也可以使用 `DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` 代替 `LLM_API_KEY`。密钥缺失时在线模式会拒绝启动，不会静默退回离线生成器。
 
 ## 当前实现与目标架构的关系
 

@@ -2,7 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from novel_agent.adapters import DisabledSearchAdapter, OfflineLLMGateway
+from novel_agent.integrations.llm.offline import OfflineLLMGateway
+from novel_agent.integrations.search.disabled import DisabledSearchAdapter
 from novel_agent.models import ChapterPlan, ChapterStatus, NovelCreateRequest
 from novel_agent.repository import SQLiteRepository
 from novel_agent.service import NovelAgentService

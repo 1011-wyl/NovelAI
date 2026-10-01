@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import mimetypes
 import re
@@ -13,8 +14,8 @@ from urllib.parse import parse_qs, urlsplit
 
 from pydantic import BaseModel, ValidationError
 
-from novel_agent.adapters import APIConfigurationRequired
-from novel_agent.adapters_remote import (
+from novel_agent.integrations.errors import APIConfigurationRequired
+from novel_agent.integrations.llm.errors import (
     LLMAuthenticationError,
     LLMProviderError,
     LLMRateLimitError,
@@ -22,6 +23,9 @@ from novel_agent.adapters_remote import (
     LLMTimeoutError,
 )
 from novel_agent.config import Settings
+from novel_agent.features.analytics.errors import AnalyticsValidationError
+from novel_agent.features.analytics.service import AnalyticsService
+from novel_agent.interfaces.http.routes.analytics import dispatch_analytics_get
 from novel_agent.models import (
     AssistantMessageCreate,
     AssistantRollbackRequest,
@@ -45,6 +49,26 @@ from novel_agent.service import NovelAgentService
 from novel_agent.tags import public_tag_catalog
 from novel_agent.workflow import WorkflowBlocked
 
+_CLIENT_DISCONNECT_ERRNOS = {
+    errno.EPIPE,
+    errno.ECONNRESET,
+    getattr(errno, "ECONNABORTED", 53),
+}
+_CLIENT_DISCONNECT_WINERRORS = {10053, 10054}
+
+
+def _is_client_disconnect(exc: BaseException) -> bool:
+    """True when the browser aborted or the TCP connection was already closed."""
+    if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+        return True
+    if isinstance(exc, OSError):
+        winerror = getattr(exc, "winerror", None)
+        if winerror in _CLIENT_DISCONNECT_WINERRORS:
+            return True
+        if getattr(exc, "errno", None) in _CLIENT_DISCONNECT_ERRNOS:
+            return True
+    return False
+
 
 def _jsonable(value: Any) -> Any:
     if isinstance(value, BaseModel):
@@ -64,6 +88,11 @@ class AppContext:
     service: NovelAgentService
     repository: SQLiteRepository
     web_root: Path
+    analytics: AnalyticsService | None = None
+
+    def __post_init__(self) -> None:
+        if self.analytics is None:
+            self.analytics = AnalyticsService(self.repository.analytics)
 
 
 class NovelAgentHandler(BaseHTTPRequestHandler):
@@ -80,7 +109,15 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         try:
-            path = self.path.split("?", 1)[0]
+            path = urlsplit(self.path).path
+            params = self._query_params()
+            assert self.context.analytics is not None
+            analytics_result = dispatch_analytics_get(
+                path, params, self.context.analytics
+            )
+            if analytics_result is not None:
+                self._send_json(analytics_result.payload, analytics_result.status)
+                return
             if path == "/api/health":
                 self._send_json(
                     {
@@ -197,19 +234,6 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
             if path == "/api/usage":
                 self._send_json(self.context.service.get_usage())
                 return
-            if path == "/api/token/statistics":
-                query = dict(
-                    item.split("=", 1)
-                    for item in self.path.split("?", 1)[1].split("&")
-                    if "=" in item
-                ) if "?" in self.path else {}
-                self._send_json(
-                    self.context.service.get_token_statistics(
-                        start_date=query.get("start_date", ""),
-                        end_date=query.get("end_date", ""),
-                    )
-                )
-                return
             if path == "/api/publishing":
                 self._send_json(
                     {
@@ -219,15 +243,6 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
                         "message": "真实番茄发布适配器未实现，避免账号与平台风险。",
                     }
                 )
-                return
-            if path == "/api/dashboard/writing":
-                self._send_json(self._dashboard_writing())
-                return
-            if path == "/api/dashboard/llm-api/records":
-                self._send_json(self._dashboard_llm_records())
-                return
-            if path == "/api/dashboard/llm-api/stats":
-                self._send_json(self._dashboard_llm_stats())
                 return
             self._serve_static(path)
         except Exception as exc:
@@ -448,52 +463,6 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
         query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
         return {key: values[-1] if values else "" for key, values in query.items()}
 
-    def _optional_query(self, params: dict[str, str], *keys: str) -> dict[str, str | None]:
-        return {key: (params.get(key) or None) for key in keys}
-
-    def _dashboard_writing(self) -> dict[str, Any]:
-        params = self._query_params()
-        return self.context.repository.get_writing_dashboard(
-            project_id=params.get("project_id") or None,
-            source=params.get("source") or None,
-            start_at=params.get("start_at") or None,
-            end_at=params.get("end_at") or None,
-            timezone_name=params.get("timezone") or "UTC",
-        )
-
-    def _dashboard_llm_stats(self) -> dict[str, Any]:
-        params = self._query_params()
-        return self.context.repository.get_llm_dashboard_stats(
-            project_id=params.get("project_id") or None,
-            model_provider=params.get("model_provider") or None,
-            model_id=params.get("model_id") or None,
-            category=params.get("category") or None,
-            operation=params.get("operation") or None,
-            status=params.get("status") or None,
-            start_at=params.get("start_at") or None,
-            end_at=params.get("end_at") or None,
-        )
-
-    def _dashboard_llm_records(self) -> dict[str, Any]:
-        params = self._query_params()
-        page = int(params.get("page") or "1")
-        page_size = int(params.get("page_size") or "20")
-        return self.context.repository.list_llm_call_records(
-            project_id=params.get("project_id") or None,
-            model_provider=params.get("model_provider") or None,
-            model_id=params.get("model_id") or None,
-            category=params.get("category") or None,
-            operation=params.get("operation") or None,
-            status=params.get("status") or None,
-            start_at=params.get("start_at") or None,
-            end_at=params.get("end_at") or None,
-            search=params.get("search") or None,
-            page=page,
-            page_size=page_size,
-            sort_by=params.get("sort_by") or "created_at",
-            sort_order=params.get("sort_order") or "desc",
-        )
-
     def _runtime_readiness(self) -> dict[str, dict[str, object]]:
         runtime = self.context.settings.api_readiness()
         runtime["story_skills"] = self.context.service.story_skills.readiness()
@@ -502,12 +471,17 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, payload: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(_jsonable(payload), ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self._cors_headers()
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self._cors_headers()
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as exc:
+            if _is_client_disconnect(exc):
+                return
+            raise
 
     def _send_sse(self, events: list[Any]) -> None:
         lines: list[str] = []
@@ -520,13 +494,18 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
             )
             lines.append("")
         body = ("\n".join(lines) + "\n").encode("utf-8")
-        self.send_response(HTTPStatus.OK)
-        self._cors_headers()
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(HTTPStatus.OK)
+            self._cors_headers()
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as exc:
+            if _is_client_disconnect(exc):
+                return
+            raise
 
     def _serve_static(self, path: str) -> None:
         relative = "index.html" if path in {"/", ""} else path.lstrip("/")
@@ -534,17 +513,42 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
         if self.context.web_root.resolve() not in target.parents and target != self.context.web_root.resolve():
             self._send_json({"error": "INVALID_PATH"}, HTTPStatus.BAD_REQUEST)
             return
+        asset_suffixes = {
+            ".js",
+            ".css",
+            ".map",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".webp",
+            ".svg",
+            ".ico",
+            ".woff",
+            ".woff2",
+        }
         if not target.is_file():
+            suffix = Path(relative).suffix.lower()
+            if suffix in asset_suffixes:
+                self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+                return
             target = self.context.web_root / "index.html"
         body = target.read_bytes()
-        self.send_response(HTTPStatus.OK)
-        content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        if target.suffix.lower() in {".js", ".css", ".html"}:
-            self.send_header("Cache-Control", "no-store, max-age=0")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(HTTPStatus.OK)
+            content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+            if target.suffix.lower() == ".js":
+                content_type = "text/javascript; charset=utf-8"
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            if target.suffix.lower() in {".js", ".css", ".html"}:
+                self.send_header("Cache-Control", "no-store, max-age=0")
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as exc:
+            if _is_client_disconnect(exc):
+                return
+            raise
 
     def _cors_headers(self) -> None:
         origin = self.headers.get("Origin", "").rstrip("/")
@@ -556,6 +560,8 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
 
     def _handle_error(self, exc: Exception) -> None:
+        if _is_client_disconnect(exc):
+            return
         status = HTTPStatus.INTERNAL_SERVER_ERROR
         error = type(exc).__name__
         message = str(exc)
@@ -583,6 +589,9 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
             status = HTTPStatus.CONFLICT
             error = "REQUIREMENT_CONFLICT"
             details = exc.conflicts
+        elif isinstance(exc, AnalyticsValidationError):
+            status = HTTPStatus.BAD_REQUEST
+            error = "BAD_REQUEST"
         elif isinstance(exc, RepositoryError):
             message = str(exc)
             if any(
@@ -623,7 +632,12 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
             error = "LLM_PROVIDER_ERROR"
         else:
             traceback.print_exc()
-        self._send_json({"error": error, "message": message, "details": details}, status)
+        try:
+            self._send_json({"error": error, "message": message, "details": details}, status)
+        except Exception as send_exc:
+            if _is_client_disconnect(send_exc):
+                return
+            raise
 
 
 def serve(context: AppContext) -> None:

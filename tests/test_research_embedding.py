@@ -2,11 +2,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from novel_agent.adapters import OfflineLLMGateway
-from novel_agent.adapters_remote import (
-    OpenAICompatibleEmbeddingGateway,
-    TavilySearchAdapter,
-)
+from novel_agent.integrations.llm.offline import OfflineLLMGateway
+from novel_agent.integrations.embedding.openai_compatible import OpenAICompatibleEmbeddingGateway
+from novel_agent.integrations.search.tavily import TavilySearchAdapter
 from novel_agent.models import NovelCreateRequest
 from novel_agent.repository import SQLiteRepository
 from novel_agent.service import NovelAgentService
