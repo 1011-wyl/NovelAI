@@ -25,16 +25,25 @@ from novel_agent.integrations.llm.errors import (
 from novel_agent.config import Settings
 from novel_agent.features.analytics.errors import AnalyticsValidationError
 from novel_agent.features.analytics.service import AnalyticsService
+from novel_agent.features.projects.service import ProjectService
+from novel_agent.features.story_design.service import StoryDesignService
 from novel_agent.interfaces.http.routes.analytics import dispatch_analytics_get
+from novel_agent.interfaces.http.routes.projects import (
+    dispatch_projects_delete,
+    dispatch_projects_get,
+    dispatch_projects_post,
+)
+from novel_agent.interfaces.http.routes.story_design import (
+    dispatch_story_design_get,
+    dispatch_story_design_post,
+    dispatch_story_design_put,
+)
 from novel_agent.models import (
     AssistantMessageCreate,
     AssistantRollbackRequest,
-    BriefRegenerateRequest,
     ChapterDraftUpdate,
     ChapterRevisionCommitRequest,
     ChapterStatus,
-    CreativeBrief,
-    NovelCreateRequest,
 )
 from novel_agent.repository import RepositoryError, SQLiteRepository
 from novel_agent.requirements import RequirementConflict
@@ -84,15 +93,27 @@ def _jsonable(value: Any) -> Any:
 
 @dataclass(slots=True)
 class AppContext:
+    """HTTP app context. Four positional args remain compatible.
+
+    analytics / projects / story_design are migration-period Feature fields;
+    bootstrap injects them explicitly, __post_init__ only fills defaults.
+    """
+
     settings: Settings
     service: NovelAgentService
     repository: SQLiteRepository
     web_root: Path
     analytics: AnalyticsService | None = None
+    projects: ProjectService | None = None
+    story_design: StoryDesignService | None = None
 
     def __post_init__(self) -> None:
         if self.analytics is None:
             self.analytics = AnalyticsService(self.repository.analytics)
+        if self.story_design is None:
+            self.story_design = self.service.story_design
+        if self.projects is None:
+            self.projects = self.service.projects
 
 
 class NovelAgentHandler(BaseHTTPRequestHandler):
@@ -118,6 +139,20 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
             if analytics_result is not None:
                 self._send_json(analytics_result.payload, analytics_result.status)
                 return
+            assert self.context.projects is not None
+            projects_result = dispatch_projects_get(
+                path, params, self.context.projects
+            )
+            if projects_result is not None:
+                self._send_json(projects_result.payload, projects_result.status)
+                return
+            assert self.context.story_design is not None
+            story_result = dispatch_story_design_get(
+                path, params, self.context.story_design
+            )
+            if story_result is not None:
+                self._send_json(story_result.payload, story_result.status)
+                return
             if path == "/api/health":
                 self._send_json(
                     {
@@ -131,13 +166,6 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/tags":
                 self._send_json(public_tag_catalog())
-                return
-            if path == "/api/novels":
-                self._send_json({"items": self.context.repository.list_projects()})
-                return
-            match = re.fullmatch(r"/api/novels/([^/]+)", path)
-            if match:
-                self._send_json(self.context.service.project_detail(match.group(1)))
                 return
             match = re.fullmatch(r"/api/novels/([^/]+)/chapters", path)
             if match:
@@ -213,12 +241,6 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
                     {"items": self.context.repository.list_research_sources(match.group(1))}
                 )
                 return
-            match = re.fullmatch(r"/api/novels/([^/]+)/brief-versions", path)
-            if match:
-                self._send_json(
-                    {"items": self.context.repository.list_brief_versions(match.group(1))}
-                )
-                return
             match = re.fullmatch(r"/api/runs/([^/]+)/events", path)
             if match:
                 self._send_sse(self.context.repository.list_events(match.group(1)))
@@ -252,20 +274,19 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
         try:
             path = self.path.split("?", 1)[0]
             payload = self._read_json()
-            if path == "/api/novels":
-                request = NovelCreateRequest.model_validate(payload)
-                self._send_json(self.context.service.create_novel(request), HTTPStatus.CREATED)
+            assert self.context.story_design is not None
+            story_result = dispatch_story_design_post(
+                path, payload, self.context.story_design
+            )
+            if story_result is not None:
+                self._send_json(story_result.payload, story_result.status)
                 return
-            match = re.fullmatch(r"/api/novels/([^/]+)/(confirm|pause|resume|recover)", path)
-            if match:
-                project_id, action = match.groups()
-                method = {
-                    "confirm": self.context.service.confirm_novel,
-                    "pause": self.context.service.pause_novel,
-                    "resume": self.context.service.resume_novel,
-                    "recover": self.context.service.recover_known_issue,
-                }[action]
-                self._send_json(method(project_id))
+            assert self.context.projects is not None
+            projects_result = dispatch_projects_post(
+                path, payload, self.context.projects
+            )
+            if projects_result is not None:
+                self._send_json(projects_result.payload, projects_result.status)
                 return
             match = re.fullmatch(r"/api/novels/([^/]+)/runs", path)
             if match:
@@ -283,21 +304,6 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
             if match:
                 self._send_json(
                     self.context.service.rebuild_character_archives(match.group(1))
-                )
-                return
-            match = re.fullmatch(r"/api/novels/([^/]+)/brief-regenerate", path)
-            if match:
-                change = BriefRegenerateRequest.model_validate(payload)
-                self._send_json(
-                    self.context.service.regenerate_draft_brief(match.group(1), change)
-                )
-                return
-            match = re.fullmatch(r"/api/novels/([^/]+)/brief-restore", path)
-            if match:
-                self._send_json(
-                    self.context.service.restore_draft_brief(
-                        match.group(1), int(payload.get("version", 0))
-                    )
                 )
                 return
             match = re.fullmatch(r"/api/novels/([^/]+)/semantic-search", path)
@@ -391,12 +397,12 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
         try:
             path = self.path.split("?", 1)[0]
             payload = self._read_json()
-            match = re.fullmatch(r"/api/novels/([^/]+)/brief", path)
-            if match:
-                brief = CreativeBrief.model_validate(payload)
-                self._send_json(
-                    self.context.service.update_draft_brief(match.group(1), brief)
-                )
+            assert self.context.story_design is not None
+            story_result = dispatch_story_design_put(
+                path, payload, self.context.story_design
+            )
+            if story_result is not None:
+                self._send_json(story_result.payload, story_result.status)
                 return
             match = re.fullmatch(r"/api/novels/([^/]+)/chapters/(\d+)/edit-draft", path)
             if match:
@@ -434,20 +440,18 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
                 self.context.service.delete_assistant_session(match.group(1))
                 self._send_json({"deleted": True, "session_id": match.group(1)})
                 return
-            match = re.fullmatch(r"/api/novels/([^/]+)", path)
-            if not match:
-                self._send_json(
-                    {"error": "NOT_FOUND", "message": "接口不存在"},
-                    HTTPStatus.NOT_FOUND,
-                )
-                return
             payload = self._read_json()
-            self.context.service.delete_novel(
-                match.group(1),
-                confirmation_title=str(payload.get("confirmation_title", "")).strip()
-                or None,
+            assert self.context.projects is not None
+            projects_result = dispatch_projects_delete(
+                path, payload, self.context.projects
             )
-            self._send_json({"deleted": True, "project_id": match.group(1)})
+            if projects_result is not None:
+                self._send_json(projects_result.payload, projects_result.status)
+                return
+            self._send_json(
+                {"error": "NOT_FOUND", "message": "接口不存在"},
+                HTTPStatus.NOT_FOUND,
+            )
         except Exception as exc:
             self._handle_error(exc)
 

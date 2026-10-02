@@ -266,6 +266,11 @@ class BootstrapTelemetryTests(unittest.TestCase):
             with patch.dict("os.environ", env, clear=False):
                 context = create_context(root=root, database_path=root / "t.db")
 
+            self.assertIsNotNone(context.projects)
+            self.assertIsNotNone(context.story_design)
+            self.assertIs(context.projects, context.service.projects)
+            self.assertIs(context.story_design, context.service.story_design)
+
             gateway = context.service.gateway
             self.assertIsInstance(gateway, DeepSeekLLMGateway)
             self.assertEqual(

@@ -13,11 +13,18 @@ from novel_agent.features.analytics.models import (
     LLMStatsQuery,
     WritingDashboardQuery,
 )
+from novel_agent.features.projects.errors import ProjectError
+from novel_agent.features.story_design.errors import BriefVersionNotFoundError, StoryDesignError
 from novel_agent.infrastructure.persistence.analytics_store import SQLiteAnalyticsStore
+from novel_agent.infrastructure.persistence.briefs_store import SQLiteBriefsStore
 from novel_agent.infrastructure.persistence.migrations.analytics_v4 import (
     DASHBOARD_MIGRATION_VERSION,
     apply_analytics_v4,
 )
+from novel_agent.infrastructure.persistence.project_setup_store import (
+    SQLiteProjectSetupStore,
+)
+from novel_agent.infrastructure.persistence.projects_store import SQLiteProjectsStore
 from novel_agent.models import (
     ChapterPlan,
     ChapterRecord,
@@ -54,6 +61,9 @@ class SQLiteRepository(RevisionStoreMixin):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.migrate()
         self.analytics = SQLiteAnalyticsStore(self)
+        self.projects = SQLiteProjectsStore(self)
+        self.briefs = SQLiteBriefsStore(self)
+        self.project_setup = SQLiteProjectSetupStore(self, self.projects, self.briefs)
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
@@ -414,99 +424,41 @@ class SQLiteRepository(RevisionStoreMixin):
             raise RepositoryError(f"数据库查询未返回结果：{operation}")
         return row
 
+    # --- Projects / Story Design: migration-period Facade (delegate to Stores) ---
+
     def create_project(
         self,
         project: ProjectRecord,
         characters: list[CharacterRecord],
         world_facts: list[WorldFactRecord],
     ) -> ProjectRecord:
-        with self.transaction() as conn:
-            conn.execute(
-                """INSERT INTO projects
-                (id,title,status,request_json,brief_json,confirmed,current_chapter,
-                 created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?)""",
-                (
-                    project.id,
-                    project.title,
-                    project.status.value,
-                    self._dump(project.request),
-                    self._dump(project.brief),
-                    int(project.confirmed),
-                    project.current_chapter,
-                    project.created_at,
-                    project.updated_at,
-                ),
+        try:
+            return self.project_setup.create_project_with_seed(
+                project, characters, world_facts
             )
-            conn.execute(
-                """INSERT INTO brief_versions
-                (project_id,version,brief_json,source,feedback,created_at)
-                VALUES (?,1,?,'initial',NULL,?)""",
-                (project.id, self._dump(project.brief), project.created_at),
-            )
-            for character in characters:
-                conn.execute(
-                    """INSERT INTO characters
-                    (id,project_id,name,role,immutable_facts_json,current_state_json,version)
-                    VALUES (?,?,?,?,?,?,?)""",
-                    (
-                        character.id,
-                        character.project_id,
-                        character.name,
-                        character.role,
-                        self._dump(character.immutable_facts),
-                        self._dump(character.current_state),
-                        character.version,
-                    ),
-                )
-            for fact in world_facts:
-                conn.execute(
-                    """INSERT INTO world_facts
-                    (id,project_id,category,statement,evidence_chapter,version,locked)
-                    VALUES (?,?,?,?,?,?,?)""",
-                    (
-                        fact.id,
-                        fact.project_id,
-                        fact.category,
-                        fact.statement,
-                        fact.evidence_chapter,
-                        fact.version,
-                        int(fact.locked),
-                    ),
-                )
-        return project
+        except (ProjectError, StoryDesignError) as exc:
+            raise RepositoryError(str(exc)) from exc
 
     def list_projects(self) -> list[ProjectRecord]:
-        with self.connection() as conn:
-            rows = conn.execute("SELECT * FROM projects ORDER BY created_at DESC").fetchall()
-        return [self._project(row) for row in rows]
+        return self.projects.list_projects()
 
     def get_project(self, project_id: str) -> ProjectRecord:
-        with self.connection() as conn:
-            row = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
-        if row is None:
-            raise RepositoryError(f"找不到小说项目：{project_id}")
-        return self._project(row)
+        try:
+            return self.projects.get_project(project_id)
+        except ProjectError as exc:
+            raise RepositoryError(str(exc)) from exc
 
     def update_project_status(self, project_id: str, status: ProjectStatus) -> ProjectRecord:
-        with self.transaction() as conn:
-            updated = conn.execute(
-                "UPDATE projects SET status=?, updated_at=? WHERE id=?",
-                (status.value, utc_now(), project_id),
-            ).rowcount
-            if not updated:
-                raise RepositoryError(f"找不到小说项目：{project_id}")
-        return self.get_project(project_id)
+        try:
+            return self.projects.update_project_status(project_id, status)
+        except ProjectError as exc:
+            raise RepositoryError(str(exc)) from exc
 
     def confirm_project(self, project_id: str) -> ProjectRecord:
-        with self.transaction() as conn:
-            updated = conn.execute(
-                "UPDATE projects SET confirmed=1,status=?,updated_at=? WHERE id=?",
-                (ProjectStatus.ACTIVE.value, utc_now(), project_id),
-            ).rowcount
-            if not updated:
-                raise RepositoryError(f"找不到小说项目：{project_id}")
-        return self.get_project(project_id)
+        try:
+            return self.projects.confirm_project(project_id)
+        except ProjectError as exc:
+            raise RepositoryError(str(exc)) from exc
 
     def save_draft_brief(
         self,
@@ -516,184 +468,27 @@ class SQLiteRepository(RevisionStoreMixin):
         source: str,
         feedback: str = "",
     ) -> ProjectRecord:
-        now = utc_now()
-        with self.transaction() as conn:
-            project = conn.execute(
-                "SELECT status,confirmed,request_json FROM projects WHERE id=?",
-                (project_id,),
-            ).fetchone()
-            if project is None:
-                raise RepositoryError(f"找不到小说项目：{project_id}")
-            if project["status"] != ProjectStatus.DRAFT.value or bool(project["confirmed"]):
-                raise RepositoryError("创作方案确认后不能直接修改，请创建正式设定变更流程")
-            count_row = self._required_row(
-                conn.execute(
-                    "SELECT COUNT(*) AS count FROM chapters WHERE project_id=?",
-                    (project_id,),
-                ).fetchone(),
-                "统计项目章节",
+        try:
+            return self.project_setup.save_draft_brief_with_seed_sync(
+                project_id, brief, source=source, feedback=feedback
             )
-            chapter_count = int(count_row["count"])
-            if chapter_count:
-                raise RepositoryError("项目已有章节，不能按草稿方案修改")
-            request = NovelCreateRequest.model_validate_json(project["request_json"])
-            version_row = self._required_row(
-                conn.execute(
-                    """SELECT COALESCE(MAX(version),0)+1 AS value
-                    FROM brief_versions WHERE project_id=?""",
-                    (project_id,),
-                ).fetchone(),
-                "计算创作方案版本",
-            )
-            next_version = int(version_row["value"])
-            conn.execute(
-                """UPDATE projects SET title=?,brief_json=?,updated_at=? WHERE id=?""",
-                (brief.selected_title, self._dump(brief), now, project_id),
-            )
-            conn.execute(
-                """INSERT INTO brief_versions
-                (project_id,version,brief_json,source,feedback,created_at)
-                VALUES (?,?,?,?,?,?)""",
-                (
-                    project_id,
-                    next_version,
-                    self._dump(brief),
-                    source[:40],
-                    feedback[:2000] or None,
-                    now,
-                ),
-            )
-            character = conn.execute(
-                """SELECT id,current_state_json,version FROM characters
-                WHERE project_id=? AND role='protagonist' ORDER BY id LIMIT 1""",
-                (project_id,),
-            ).fetchone()
-            if character is None:
-                raise RepositoryError("找不到主角人物记录")
-            state = json.loads(character["current_state_json"])
-            state["goal"] = brief.main_conflict
-            protagonist_profile = next(
-                (
-                    profile
-                    for profile in brief.character_profiles
-                    if profile.name == brief.protagonist_name
-                ),
-                None,
-            )
-            if protagonist_profile:
-                state["relationships"] = protagonist_profile.relationships
-            state["importance"] = "core"
-            immutable = [
-                f"主角姓名为{brief.protagonist_name}",
-                *(
-                    [f"人物背景：{brief.protagonist_profile}"]
-                    if brief.protagonist_profile
-                    else []
-                ),
-                f"故事起点属于{request.genre}",
-                "没有未经故事建立的无限资源或全知能力",
-            ]
-            if protagonist_profile and protagonist_profile.personality:
-                immutable.insert(
-                    -2,
-                    f"性格特征：{'、'.join(protagonist_profile.personality)}",
-                )
-            conn.execute(
-                """UPDATE characters SET name=?,immutable_facts_json=?,current_state_json=?,
-                version=? WHERE id=?""",
-                (
-                    brief.protagonist_name,
-                    self._dump(immutable),
-                    self._dump(state),
-                    int(character["version"]) + 1,
-                    character["id"],
-                ),
-            )
-            conn.execute(
-                "DELETE FROM characters WHERE project_id=? AND role<>'protagonist'",
-                (project_id,),
-            )
-            for profile in brief.character_profiles:
-                if profile.name == brief.protagonist_name:
-                    continue
-                profile_facts = [
-                    *([f"人物背景：{profile.profile}"] if profile.profile else []),
-                    *(
-                        [f"性格特征：{'、'.join(profile.personality)}"]
-                        if profile.personality
-                        else []
-                    ),
-                ]
-                profile_state = {
-                    "chapter": 0,
-                    "importance": profile.importance,
-                    "goal": profile.core_goal,
-                    "knowledge": [],
-                    "relationships": profile.relationships,
-                }
-                conn.execute(
-                    """INSERT INTO characters
-                    (id,project_id,name,role,immutable_facts_json,current_state_json,version)
-                    VALUES (?,?,?,?,?,?,1)""",
-                    (
-                        new_id("character"),
-                        project_id,
-                        profile.name,
-                        "supporting" if profile.role == "protagonist" else profile.role,
-                        self._dump(profile_facts),
-                        self._dump(profile_state),
-                    ),
-                )
-            conn.execute("DELETE FROM world_facts WHERE project_id=?", (project_id,))
-            for statement in brief.world_rules:
-                conn.execute(
-                    """INSERT INTO world_facts
-                    (id,project_id,category,statement,evidence_chapter,version,locked)
-                    VALUES (?,?,?,?,NULL,1,1)""",
-                    (new_id("fact"), project_id, "hard_rule", statement),
-                )
-        return self.get_project(project_id)
+        except (ProjectError, StoryDesignError) as exc:
+            raise RepositoryError(str(exc)) from exc
 
     def list_brief_versions(self, project_id: str) -> list[dict[str, Any]]:
-        with self.connection() as conn:
-            rows = conn.execute(
-                """SELECT version,brief_json,source,feedback,created_at FROM brief_versions
-                WHERE project_id=? ORDER BY version DESC""",
-                (project_id,),
-            ).fetchall()
-        return [
-            {
-                "version": row["version"],
-                "brief": CreativeBrief.model_validate_json(row["brief_json"]),
-                "source": row["source"],
-                "feedback": row["feedback"],
-                "created_at": row["created_at"],
-            }
-            for row in rows
-        ]
+        return self.briefs.list_brief_versions(project_id)
 
     def get_brief_version(self, project_id: str, version: int) -> CreativeBrief:
-        with self.connection() as conn:
-            row = conn.execute(
-                "SELECT brief_json FROM brief_versions WHERE project_id=? AND version=?",
-                (project_id, version),
-            ).fetchone()
-        if row is None:
-            raise RepositoryError(f"找不到方案版本：v{version}")
-        return CreativeBrief.model_validate_json(row["brief_json"])
+        try:
+            return self.briefs.get_brief_version(project_id, version)
+        except BriefVersionNotFoundError as exc:
+            raise RepositoryError(str(exc)) from exc
 
     def delete_project(self, project_id: str, *, force: bool = False) -> None:
-        with self.transaction() as conn:
-            project = conn.execute(
-                "SELECT status,confirmed FROM projects WHERE id=?", (project_id,)
-            ).fetchone()
-            if project is None:
-                raise RepositoryError(f"找不到小说项目：{project_id}")
-            if not force:
-                if project["status"] != ProjectStatus.DRAFT.value or bool(project["confirmed"]):
-                    raise RepositoryError("只能删除尚未确认的草稿项目")
-            conn.execute("DELETE FROM publish_tasks WHERE project_id=?", (project_id,))
-            conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
+        try:
+            self.projects.delete_project(project_id, force=force)
+        except ProjectError as exc:
+            raise RepositoryError(str(exc)) from exc
 
     def rework_chapter(
         self,
@@ -1804,17 +1599,7 @@ class SQLiteRepository(RevisionStoreMixin):
         return {row["key"]: json.loads(row["value_json"]) for row in rows}
 
     def _project(self, row: sqlite3.Row) -> ProjectRecord:
-        return ProjectRecord(
-            id=row["id"],
-            title=row["title"],
-            status=ProjectStatus(row["status"]),
-            request=NovelCreateRequest.model_validate_json(row["request_json"]),
-            brief=CreativeBrief.model_validate_json(row["brief_json"]),
-            confirmed=bool(row["confirmed"]),
-            current_chapter=row["current_chapter"],
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
+        return self.projects.project_from_row(row)
 
     def _chapter(self, row: sqlite3.Row) -> ChapterRecord:
         return ChapterRecord(

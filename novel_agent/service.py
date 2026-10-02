@@ -8,6 +8,10 @@ from novel_agent.integrations.search.disabled import DisabledSearchAdapter
 from novel_agent.ports import EmbeddingGateway, LLMGateway, SearchAdapter
 from novel_agent.chapter_workspace import ChapterWorkspaceMixin
 from novel_agent.features.analytics.service import AnalyticsService
+from novel_agent.features.projects.detail_reader import AggregatingProjectDetailReader
+from novel_agent.features.projects.service import ProjectService
+from novel_agent.features.story_design.characters import build_character_records
+from novel_agent.features.story_design.service import StoryDesignService
 from novel_agent.memory_manager import MemoryManager
 from novel_agent.models import (
     BriefRegenerateRequest,
@@ -20,20 +24,22 @@ from novel_agent.models import (
     ProjectStatus,
     ReviewDecision,
     WorkflowResult,
-    WorldFactRecord,
-    new_id,
-    utc_now,
 )
 from novel_agent.repository import RepositoryError, SQLiteRepository
-from novel_agent.requirements import validate_requirements
 from novel_agent.story_skills import StorySkillsRuntime
-from novel_agent.telemetry import llm_call_scope
 from novel_agent.writing_skills import OhStoryWritingRuntime
 from novel_agent.workflow import ChapterWorkflow
 
 
 @dataclass(slots=True)
 class NovelAgentService(ChapterWorkspaceMixin):
+    """Compatibility Facade / coordinator.
+
+    Project lifecycle and story-design methods delegate to ProjectService /
+    StoryDesignService. Chapter workflow, memory, revision and recover remain
+    here until later modular splits.
+    """
+
     repository: SQLiteRepository
     gateway: LLMGateway
     search: SearchAdapter
@@ -43,45 +49,30 @@ class NovelAgentService(ChapterWorkspaceMixin):
     story_skills: StorySkillsRuntime = field(default_factory=StorySkillsRuntime.disabled)
     writing_skills: OhStoryWritingRuntime = field(default_factory=OhStoryWritingRuntime.disabled)
     memory_manager: MemoryManager = field(default_factory=MemoryManager)
+    story_design: StoryDesignService | None = None
+    projects: ProjectService | None = None
+
+    def __post_init__(self) -> None:
+        if self.story_design is None:
+            self.story_design = StoryDesignService(
+                store=self.repository,
+                gateway=self.gateway,
+            )
+        if self.projects is None:
+            self.projects = ProjectService(
+                store=self.repository,
+                detail_reader=AggregatingProjectDetailReader(
+                    self.repository,
+                    self.story_skills,
+                    self.writing_skills,
+                ),
+                recover_handler=self.recover_known_issue,
+            )
 
     def create_novel(self, request: NovelCreateRequest) -> ProjectRecord:
-        validate_requirements(request)
-        project_id = new_id("novel")
-        with llm_call_scope(project_id=project_id, category="agent"):
-            brief = self.gateway.create_brief(request)
-        if request.preferred_title:
-            candidates = [request.preferred_title, *brief.title_candidates]
-            brief = brief.model_copy(
-                update={
-                    "selected_title": request.preferred_title,
-                    "title_candidates": list(dict.fromkeys(candidates))[:6],
-                }
-            )
-        now = utc_now()
-        confirmed = not request.require_plan_confirmation
-        project = ProjectRecord(
-            id=project_id,
-            title=brief.selected_title,
-            status=ProjectStatus.ACTIVE if confirmed else ProjectStatus.DRAFT,
-            request=request,
-            brief=brief,
-            confirmed=confirmed,
-            current_chapter=0,
-            created_at=now,
-            updated_at=now,
-        )
-        characters = self._character_records(project_id, request, brief)
-        facts = [
-            WorldFactRecord(
-                id=new_id("fact"),
-                project_id=project_id,
-                category="hard_rule",
-                statement=statement,
-                locked=True,
-            )
-            for statement in brief.world_rules
-        ]
-        return self.repository.create_project(project, characters, facts)
+        assert self.story_design is not None
+        self.story_design.gateway = self.gateway
+        return self.story_design.create_story(request)
 
     @staticmethod
     def _character_records(
@@ -89,108 +80,34 @@ class NovelAgentService(ChapterWorkspaceMixin):
         request: NovelCreateRequest,
         brief: CreativeBrief,
     ) -> list[CharacterRecord]:
-        records: list[CharacterRecord] = []
-        for profile in brief.character_profiles:
-            is_protagonist = profile.name == brief.protagonist_name
-            immutable_facts = [
-                *([f"人物背景：{profile.profile}"] if profile.profile else []),
-                *([f"性格特征：{'、'.join(profile.personality)}"] if profile.personality else []),
-            ]
-            if is_protagonist:
-                immutable_facts = [
-                    f"主角姓名为{profile.name}",
-                    *immutable_facts,
-                    f"故事起点属于{request.genre}",
-                    "没有未经故事建立的无限资源或全知能力",
-                ]
-            records.append(
-                CharacterRecord(
-                    id=new_id("character"),
-                    project_id=project_id,
-                    name=profile.name,
-                    role="protagonist" if is_protagonist else profile.role,
-                    immutable_facts=immutable_facts,
-                    current_state={
-                        "chapter": 0,
-                        "importance": "core" if is_protagonist else profile.importance,
-                        "goal": profile.core_goal or (brief.main_conflict if is_protagonist else ""),
-                        "knowledge": [],
-                        "relationships": profile.relationships,
-                    },
-                )
-            )
-        return records
+        return build_character_records(project_id, request, brief)
 
     def confirm_novel(self, project_id: str) -> ProjectRecord:
-        return self.repository.confirm_project(project_id)
+        assert self.projects is not None
+        return self.projects.confirm(project_id)
 
     def update_draft_brief(
         self, project_id: str, brief: CreativeBrief
     ) -> ProjectRecord:
-        self._assert_editable_draft(project_id)
-        brief = CreativeBrief.model_validate(brief.model_dump(mode="json"))
-        return self.repository.save_draft_brief(
-            project_id, brief, source="manual_edit"
-        )
+        assert self.story_design is not None
+        return self.story_design.update_brief(project_id, brief)
 
     def regenerate_draft_brief(
         self, project_id: str, change: BriefRegenerateRequest
     ) -> ProjectRecord:
-        project = self._assert_editable_draft(project_id)
-        fields = self._brief_fields(change.sections)
-        with llm_call_scope(project_id=project_id, category="agent"):
-            if change.feedback or change.sections:
-                candidate = self.gateway.revise_brief(
-                    project.request,
-                    project.brief,
-                    change.feedback,
-                    fields,
-                )
-            else:
-                candidate = self.gateway.create_brief(project.request)
-        if fields:
-            merged = project.brief.model_dump(mode="json")
-            generated = candidate.model_dump(mode="json")
-            for name in fields:
-                merged[name] = generated[name]
-            candidate = CreativeBrief.model_validate(merged)
-        else:
-            candidate = CreativeBrief.model_validate(
-                candidate.model_dump(mode="json")
-            )
-        source = "partial_regenerate" if change.sections else "regenerate"
-        if change.feedback:
-            source = "feedback_regenerate"
-        return self.repository.save_draft_brief(
-            project_id,
-            candidate,
-            source=source,
-            feedback=change.feedback,
-        )
+        assert self.story_design is not None
+        self.story_design.gateway = self.gateway
+        return self.story_design.regenerate_brief(project_id, change)
 
     def restore_draft_brief(self, project_id: str, version: int) -> ProjectRecord:
-        self._assert_editable_draft(project_id)
-        brief = self.repository.get_brief_version(project_id, version)
-        return self.repository.save_draft_brief(
-            project_id, brief, source="restore", feedback=f"恢复 v{version}"
-        )
+        assert self.story_design is not None
+        return self.story_design.restore_brief(project_id, version)
 
     def delete_novel(
         self, project_id: str, *, confirmation_title: str | None = None
     ) -> None:
-        project = self.repository.get_project(project_id)
-        editable_draft = (
-            project.status == ProjectStatus.DRAFT
-            and not project.confirmed
-            and not self.repository.list_chapters(project_id)
-        )
-        if editable_draft:
-            self._assert_editable_draft(project_id)
-            self.repository.delete_project(project_id)
-            return
-        if confirmation_title != project.title:
-            raise ValueError("删除正式作品时必须完整输入当前书名进行确认")
-        self.repository.delete_project(project_id, force=True)
+        assert self.projects is not None
+        self.projects.delete(project_id, confirmation_title=confirmation_title)
 
     def rework_chapter(
         self, project_id: str, chapter_number: int, *, feedback: str = ""
@@ -226,13 +143,12 @@ class NovelAgentService(ChapterWorkspaceMixin):
         )
 
     def pause_novel(self, project_id: str) -> ProjectRecord:
-        return self.repository.update_project_status(project_id, ProjectStatus.PAUSED)
+        assert self.projects is not None
+        return self.projects.pause(project_id)
 
     def resume_novel(self, project_id: str) -> ProjectRecord:
-        project = self.repository.get_project(project_id)
-        if not project.confirmed:
-            raise ValueError("创作方案尚未确认")
-        return self.repository.update_project_status(project_id, ProjectStatus.ACTIVE)
+        assert self.projects is not None
+        return self.projects.resume(project_id)
 
     def recover_known_issue(self, project_id: str) -> ProjectRecord:
         """Recover a project from HUMAN_REQUIRED to ACTIVE.
@@ -385,41 +301,8 @@ class NovelAgentService(ChapterWorkspaceMixin):
         }
 
     def project_detail(self, project_id: str) -> dict[str, object]:
-        project = self.repository.get_project(project_id)
-        chapters = self.repository.list_chapters(project_id)
-        latest_run_id = self.repository.get_latest_run_id(project_id)
-        latest_events = (
-            self.repository.list_events(latest_run_id)
-            if latest_run_id
-            else []
-        )
-        return {
-            "project": project,
-            "chapters": chapters,
-            "latest_events": latest_events,
-            "characters": self.repository.list_characters(project_id),
-            "world_facts": self.repository.list_world_facts(project_id),
-            "timeline": self.repository.list_timeline(project_id),
-            "research_sources": self.repository.list_research_sources(project_id),
-            "semantic_document_count": self.repository.semantic_document_count(project_id),
-            "reserve_count": self.repository.reserve_count(project_id),
-            "skills": {
-                "story_skills": self.story_skills.readiness(),
-                "oh_story": {
-                    **self.writing_skills.readiness(),
-                    "active_genre_card": (
-                        card.name
-                        if (
-                            card := self.writing_skills.genre_card(
-                                project.request.genre,
-                                project.request.audience_channel,
-                            )
-                        )
-                        else None
-                    ),
-                },
-            },
-        }
+        assert self.projects is not None
+        return self.projects.get_detail(project_id)
 
     def semantic_search(
         self, project_id: str, query: str, limit: int | None = None
@@ -437,39 +320,12 @@ class NovelAgentService(ChapterWorkspaceMixin):
         )
 
     def _assert_editable_draft(self, project_id: str) -> ProjectRecord:
-        project = self.repository.get_project(project_id)
-        if project.status != ProjectStatus.DRAFT or project.confirmed:
-            raise ValueError("创作方案已确认，不能再按草稿方式修改")
-        if self.repository.list_chapters(project_id):
-            raise ValueError("项目已经生成章节，不能再按草稿方式修改")
-        return project
+        assert self.story_design is not None
+        return self.story_design._assert_editable_draft(project_id)
 
     @staticmethod
     def _brief_fields(sections: list[str]) -> list[str]:
-        groups = {
-            "title": ["title_candidates", "selected_title"],
-            "story": [
-                "synopsis",
-                "target_readers",
-                "selling_points",
-                "main_conflict",
-                "reader_contract",
-                "core_expectation",
-            ],
-            "protagonist": [
-                "protagonist",
-                "protagonist_name",
-                "protagonist_profile",
-                "character_profiles",
-            ],
-            "world": ["world_rules"],
-            "opening": ["opening_three_chapters"],
-            "style": ["style_guide"],
-            "serialization": ["total_chapters", "volume_count", "update_plan"],
-        }
-        return list(
-            dict.fromkeys(field for section in sections for field in groups[section])
-        )
+        return StoryDesignService.brief_fields(sections)
 
 
 def build_service(repository: SQLiteRepository, gateway: LLMGateway) -> NovelAgentService:

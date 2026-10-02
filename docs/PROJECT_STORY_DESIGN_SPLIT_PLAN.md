@@ -1652,3 +1652,54 @@ create_project transaction
 ```
 
 不要第一轮就同时修改模型、SQL、Service、Route、前端和 CSS。该模块真正的风险不在移动文件，而在保持项目初始化和方案同步的事务原子性。
+
+---
+
+## 25. 实施完成记录
+
+**状态：** 阶段 0—10 已完成。
+
+**完成日期：** 2026-10-02
+
+### 最终目录结构
+
+```text
+novel_agent/
+  features/projects/                 # models / ports / service / detail_reader / errors
+  features/story_design/             # models / ports / service / characters / requirements / tags
+  infrastructure/persistence/
+    projects_store.py
+    briefs_store.py
+    project_setup_store.py           # 跨表 create / save_draft_brief 事务
+  interfaces/http/routes/
+    projects.py
+    story_design.py
+    result.py                        # 共享 RouteResult
+  models.py / requirements.py / tags.py   # 兼容 re-export
+  repository.py / service.py              # 兼容 Facade + 未迁领域
+  api.py / bootstrap.py                   # AppContext 注入 projects/story_design
+
+apps/web/
+  js/core/api-client.js
+  js/features/projects/
+  js/features/novel-create/
+  js/features/story-brief/
+  js/features/project-dashboard/
+  styles/features/{novel-create,story-brief,project-dashboard}.css
+```
+
+### 收尾核对（阶段 10）
+
+- 项目/方案 CRUD SQL 仅在 Stores；`repository` 相关方法只委托
+- `api.py` 无已迁 route 双实现；Handler 先 dispatch Feature routes
+- `app.js` 无创建/方案/生命周期业务实现；唯一 projects state
+- Feature CSS 已迁出，`styles.css` 无对应重复选择器
+- 公开 Facade 保留，不加 DeprecationWarning、不删旧 import 路径
+- `docs/ARCHITECTURE.md` 与总拆分路线阶段 4 状态已更新
+- 纯结构重构，`docs/USER_GUIDE.md` 未改；README → USER_GUIDE 链接有效
+
+### 测试与门禁
+
+- Projects / Story Design 表征与兼容测试：`tests/projects/`、`tests/story_design/`
+- 前端静态资源：`tests/test_web_project_assets.py`
+- 全量 unittest 与 `node --check`、`git diff --check` 在收尾阶段通过

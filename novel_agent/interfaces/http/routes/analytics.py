@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from http import HTTPStatus
-from typing import Any, Mapping
+from dataclasses import asdict
+from typing import Mapping
 
 from novel_agent.features.analytics.errors import AnalyticsValidationError
 from novel_agent.features.analytics.models import (
@@ -11,6 +10,7 @@ from novel_agent.features.analytics.models import (
     WritingDashboardQuery,
 )
 from novel_agent.features.analytics.service import AnalyticsService
+from novel_agent.interfaces.http.routes.result import RouteResult
 
 ANALYTICS_GET_PATHS = frozenset(
     {
@@ -22,10 +22,7 @@ ANALYTICS_GET_PATHS = frozenset(
 )
 
 
-@dataclass(frozen=True, slots=True)
-class RouteResult:
-    payload: Any
-    status: HTTPStatus = HTTPStatus.OK
+__all__ = ["ANALYTICS_GET_PATHS", "RouteResult", "dispatch_analytics_get"]
 
 
 def dispatch_analytics_get(

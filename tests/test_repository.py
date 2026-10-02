@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import novel_agent.service as service_module
+import novel_agent.features.story_design.service as story_design_service
 from novel_agent.integrations.llm.offline import OfflineLLMGateway
 from novel_agent.integrations.search.disabled import DisabledSearchAdapter
 from novel_agent.models import NovelCreateRequest
@@ -44,28 +44,34 @@ class RepositoryTests(unittest.TestCase):
             self.assertGreater(protagonist_after.version, protagonist_before.version)
 
     def test_chapter_versions_keep_draft_history(self) -> None:
-        original_validate = service_module.validate_requirements
-        service_module.validate_requirements = lambda _request: None
-        with tempfile.TemporaryDirectory() as folder:
-            repository = SQLiteRepository(Path(folder) / "history.db")
-            service = NovelAgentService(repository, OfflineLLMGateway(), DisabledSearchAdapter())
-            project = service.create_novel(
-                NovelCreateRequest(
-                    genre="閮藉競",
-                    idea="鏅€氫汉缁忚惀涓€瀹剁ぞ鍖轰慨鐞嗗簵銆?",
-                    require_plan_confirmation=False,
-                    chapter_target_chars=800,
+        original_validate = story_design_service.validate_requirements
+        story_design_service.validate_requirements = lambda _request: None
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                repository = SQLiteRepository(Path(folder) / "history.db")
+                service = NovelAgentService(
+                    repository, OfflineLLMGateway(), DisabledSearchAdapter()
                 )
-            )
+                project = service.create_novel(
+                    NovelCreateRequest(
+                        genre="都市",
+                        idea="普通人经营一家社区修理店。",
+                        require_plan_confirmation=False,
+                        chapter_target_chars=800,
+                    )
+                )
 
-            service_module.validate_requirements = original_validate
-            result = service.generate_next_chapter(project.id)
-            versions = repository.list_chapter_versions(project.id, result.chapter.number)
+                result = service.generate_next_chapter(project.id)
+                versions = repository.list_chapter_versions(
+                    project.id, result.chapter.number
+                )
 
-            self.assertGreaterEqual(len(versions), 2)
-            self.assertEqual(versions[0]["kind"], "FINAL")
-            self.assertEqual(versions[0]["content"], result.chapter.content)
-            self.assertTrue(any(version["kind"] == "DRAFT" for version in versions))
+                self.assertGreaterEqual(len(versions), 2)
+                self.assertEqual(versions[0]["kind"], "FINAL")
+                self.assertEqual(versions[0]["content"], result.chapter.content)
+                self.assertTrue(any(version["kind"] == "DRAFT" for version in versions))
+        finally:
+            story_design_service.validate_requirements = original_validate
 
 
 if __name__ == "__main__":

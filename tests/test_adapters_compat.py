@@ -405,6 +405,7 @@ class ConstructorSignatureCharacterizationTests(unittest.TestCase):
                 "reasoning_budget_factor",
                 "transport",
                 "sleep",
+                "provider_name",
                 "on_call",
                 "on_usage",
             ],
@@ -414,6 +415,7 @@ class ConstructorSignatureCharacterizationTests(unittest.TestCase):
         self.assertEqual(params["timeout_seconds"].default, 120.0)
         self.assertEqual(params["max_retries"].default, 2)
         self.assertEqual(params["reasoning_budget_factor"].default, 3.0)
+        self.assertEqual(params["provider_name"].default, "deepseek")
         self.assertEqual(params["on_call"].kind, inspect.Parameter.KEYWORD_ONLY)
         self.assertEqual(params["on_usage"].kind, inspect.Parameter.KEYWORD_ONLY)
         self.assertIsNone(params["on_call"].default)

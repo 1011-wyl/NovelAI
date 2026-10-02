@@ -5,8 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Novel Agent 个人自主小说作者控制台">
   <title>Novel Agent · 自主作者控制台</title>
-  <link rel="stylesheet" href="/styles.css?v=rr8">
+  <link rel="stylesheet" href="/styles.css?v=rr9">
   <link rel="stylesheet" href="/styles/features/analytics.css?v=rr5">
+  <link rel="stylesheet" href="/styles/features/project-dashboard.css?v=rr1">
+  <link rel="stylesheet" href="/styles/features/story-brief.css?v=rr1">
+  <link rel="stylesheet" href="/styles/features/novel-create.css?v=rr1">
   <link rel="stylesheet" href="/reader-workspace.css?v=rr8">
 </head>
 <body>
@@ -75,46 +78,6 @@
             </div>
           </div>
 
-          <article id="briefWorkbench" class="panel brief-workbench hidden">
-            <div class="panel-head"><div><p class="eyebrow">方案工作台</p><h3>方案修改与版本对比</h3></div><span class="badge">确认前可修改</span></div>
-            <div class="workbench-grid">
-              <form id="briefEditForm" class="brief-edit-form hidden">
-                <label>正式书名<input name="selected_title" maxlength="80" required></label>
-                <label>故事简介<textarea name="synopsis" rows="4" required></textarea></label>
-                <div class="field-row"><label>目标读者<input name="target_readers" required></label><label>主角姓名<input name="protagonist_name" maxlength="20" required></label></div>
-                <label>主角介绍<textarea name="protagonist_profile" rows="3"></textarea></label>
-                <label>主要冲突<textarea name="main_conflict" rows="2" required></textarea></label>
-                <label>读者契约<textarea name="reader_contract" rows="2" placeholder="这本书持续向读者交付什么核心情绪回报"></textarea></label>
-                <label>核心期待<textarea name="core_expectation" rows="2" placeholder="开篇建立并需要持续推进的主要期待"></textarea></label>
-                <label>核心卖点（每行一项）<textarea name="selling_points" rows="3"></textarea></label>
-                <label>世界规则（每行一项）<textarea name="world_rules" rows="4"></textarea></label>
-                <label>开篇三章（每行一章）<textarea name="opening_three_chapters" rows="3"></textarea></label>
-                <label>文风规则（每行一项）<textarea name="style_guide" rows="3"></textarea></label>
-                <div class="field-row"><label>预计章节数<input name="total_chapters" type="number" min="1" required></label><label>分卷数<input name="volume_count" type="number" min="1" required></label></div>
-                <label>更新计划<input name="update_plan" required></label>
-                <div class="form-actions"><button class="button primary" type="submit">保存为新版本</button><button id="cancelBriefEdit" class="button ghost" type="button">取消</button></div>
-              </form>
-              <div class="brief-regenerate-box">
-                <label>告诉智能体哪里不满意<textarea id="briefFeedback" rows="4" placeholder="例如：书名更简洁；主角不要重生；开篇冲突更快。"></textarea></label>
-                <fieldset><legend>只重做选中的模块；不选则整体优化</legend><div class="chips compact-chips" id="briefSections">
-                  <label class="chip"><input type="checkbox" value="title"><span>书名</span></label>
-                  <label class="chip"><input type="checkbox" value="story"><span>故事核心</span></label>
-                  <label class="chip"><input type="checkbox" value="protagonist"><span>主角</span></label>
-                  <label class="chip"><input type="checkbox" value="world"><span>世界规则</span></label>
-                  <label class="chip"><input type="checkbox" value="opening"><span>开篇三章</span></label>
-                  <label class="chip"><input type="checkbox" value="style"><span>文风</span></label>
-                  <label class="chip"><input type="checkbox" value="serialization"><span>连载计划</span></label>
-                </div></fieldset>
-                <button id="feedbackRegenerateButton" class="button secondary" type="button">按意见生成新版本</button>
-                <p class="muted">每次修改都会保留旧版本。只有点击“确认创作方案”后才会锁定设定并开始写作。</p>
-              </div>
-            </div>
-            <div class="version-compare">
-              <div class="compare-controls"><label>左侧版本<select id="briefVersionLeft"></select></label><label>右侧版本<select id="briefVersionRight"></select></label><button id="restoreBriefVersion" class="button ghost" type="button">恢复左侧版本</button></div>
-              <div class="compare-grid"><div id="briefCompareLeft" class="brief-snapshot empty">暂无版本</div><div id="briefCompareRight" class="brief-snapshot empty">暂无版本</div></div>
-            </div>
-          </article>
-
           <div class="metric-grid">
             <article class="metric"><span>今日完成</span><strong id="todayCount">0</strong><small>章节</small></article>
             <article class="metric"><span>READY 储备</span><strong id="reserveCount">0</strong><small id="reserveTarget">目标 0</small></article>
@@ -141,44 +104,7 @@
           </article>
         </section>
 
-        <section id="createView" class="view">
-          <form id="createForm" class="form-layout">
-            <article class="panel form-main">
-              <p class="eyebrow">新建小说</p>
-              <h2>用标签确定方向</h2>
-              <p class="muted">标签会转换成可执行规则，并在每章写作前后参与检查。</p>
-              <fieldset><legend>读者频道</legend><div class="channel-switch">
-                <label><input type="radio" name="audience_channel" value="男频" checked><span>男频</span><small>目标推进、升级反馈、世界探索</small></label>
-                <label><input type="radio" name="audience_channel" value="女频"><span>女频</span><small>人物成长、情感因果、关系变化</small></label>
-              </div></fieldset>
-              <label>主类型
-                <select id="genreSelect" name="genre" required></select>
-              </label>
-              <label>书名（可选）<input name="preferred_title" maxlength="80" placeholder="留空则由智能体生成多个候选书名"></label>
-              <fieldset><legend>阅读体验（可多选）</legend><div class="chips" data-check-group="experiences"></div></fieldset>
-              <fieldset><legend>核心元素（可多选）</legend><div class="chips" data-check-group="elements"></div></fieldset>
-              <fieldset><legend>主角设定（可多选）</legend><div class="chips" data-check-group="protagonist_tags"></div></fieldset>
-              <p id="tagCatalogNote" class="catalog-note"></p>
-              <label>你的核心想法
-                <textarea name="idea" required rows="5" placeholder="例如：主角是一名仓储管理员，没有无限空间，只能依靠职业经验和有限资源建立社区。"></textarea>
-              </label>
-            </article>
-            <aside class="panel form-side">
-              <p class="eyebrow">约束</p>
-              <h3>约束与更新计划</h3>
-              <label>必须包含 <input name="must_have" placeholder="逗号分隔"></label>
-              <label>希望包含 <input name="nice_to_have" placeholder="逗号分隔"></label>
-              <label>明确不要 <input name="exclude" placeholder="如：过度血腥, 悲剧结局"></label>
-              <label>感情线
-                <select id="romanceSelect" name="romance"></select>
-              </label>
-              <div class="field-row"><label>单章目标字数<input name="chapter_target_chars" type="number" min="800" max="8000" value="2200"></label><label>每日章节<input name="daily_chapters" type="number" min="1" max="20" value="2"></label></div>
-              <label>储备安全线<input name="reserve_target" type="number" min="1" max="50" value="5"></label>
-              <label class="toggle"><input name="require_plan_confirmation" type="checkbox" checked><span>生成方案后由我确认一次</span></label>
-              <button class="button primary wide" type="submit">生成创作方案</button>
-            </aside>
-          </form>
-        </section>
+        <section id="createView" class="view"></section>
 
         <section id="readerView" class="view writing-workspace"></section>
 
@@ -255,6 +181,6 @@
     })();
   </script>
   <script src="/reader-workspace.js?v=rr8"></script>
-  <script src="/app.js?v=rr5"></script>
+  <script src="/app.js?v=rr9"></script>
 </body>
 </html>

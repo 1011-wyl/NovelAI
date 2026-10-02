@@ -933,6 +933,8 @@ bootstrap ──组装所有依赖──> application + interfaces
 
 ### 阶段 4：项目与故事方案
 
+**状态：已完成**（详见 `docs/PROJECT_STORY_DESIGN_SPLIT_PLAN.md` 实施完成记录）
+
 1. 拆分 story design 和 project models/service/store。
 2. API 路由迁入 projects/story_design。
 3. 前端拆出 novel-create、story-brief、project-dashboard。
@@ -941,6 +943,8 @@ bootstrap ──组装所有依赖──> application + interfaces
 验收：创建、方案编辑、重生成、版本恢复、确认和删除行为不变。
 
 ### 阶段 5：Memory、Research 与 Semantic
+
+**状态：未开始**（Projects / Story Design 完成后的推荐下一模块）
 
 1. 拆分 memory models/context builder/service/store。
 2. 拆分 research 和 semantic stores。
@@ -1092,17 +1096,11 @@ docs(architecture): document analytics module boundary
 
 ## 19. 推荐起点
 
-建议不要从 `ChapterWorkflow` 或 Reader 工作台开始拆。第一个实施模块应为：
+Analytics / Dashboard 与 External Integrations、Projects / Story Design 已完成主体拆分。
 
-> **Analytics / Dashboard 垂直模块**
+下一实施模块应为：
 
-执行顺序：
+> **Memory / Research / Semantic（总路线阶段 5）**
 
-1. 提取 `AnalyticsStore`；
-2. 新建 `AnalyticsService`；
-3. 提取 Dashboard routes；
-4. 拆分前端 chart/data/view；
-5. 更新测试与架构文档。
-
-它能完整验证“Store → Service → Route → Frontend Feature”的目标结构，同时不触碰小说正文、记忆或修订事务。试点成功后，再用相同模式迁移其他业务模块。
+不要跳过它直接拆 `ChapterWorkflow`。执行顺序见上文阶段 5，并继续遵守：不覆盖工作区无关成果、保留兼容 Facade、事务边界不变。
 

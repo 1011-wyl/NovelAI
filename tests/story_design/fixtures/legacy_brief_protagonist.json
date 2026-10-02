@@ -1,0 +1,15 @@
+{
+  "title_candidates": ["旧书名"],
+  "selected_title": "旧书名",
+  "synopsis": "资源紧张的社区故事。",
+  "target_readers": "喜欢稳健经营的读者",
+  "selling_points": ["资源约束", "社区协作"],
+  "protagonist": "主角姓名：顾宁，曾是仓库管理员，擅长统筹稀缺物资。",
+  "main_conflict": "如何在资源耗尽前建立可持续秩序",
+  "world_rules": ["物资不可凭空再生", "信息公开会影响人心"],
+  "total_chapters": 120,
+  "volume_count": 4,
+  "opening_three_chapters": ["物资清点", "第一次分配冲突", "结盟代价"],
+  "update_plan": "日更两章",
+  "style_guide": ["克制", "具体"]
+}

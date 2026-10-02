@@ -6,6 +6,9 @@ from pathlib import Path
 from novel_agent.api import AppContext
 from novel_agent.config import Settings
 from novel_agent.features.analytics.service import AnalyticsService
+from novel_agent.features.projects.detail_reader import AggregatingProjectDetailReader
+from novel_agent.features.projects.service import ProjectService
+from novel_agent.features.story_design.service import StoryDesignService
 from novel_agent.integrations.factories import (
     build_embedding_gateway,
     build_llm_gateway,
@@ -48,6 +51,10 @@ def create_context(root: Path | None = None, database_path: Path | None = None) 
         research_chapter_gap=settings.memory_research_gap,
         research_reliability_min=settings.memory_research_reliability,
     )
+    story_design = StoryDesignService(
+        store=repository,
+        gateway=gateway,
+    )
     service = NovelAgentService(
         repository=repository,
         gateway=gateway,
@@ -58,11 +65,24 @@ def create_context(root: Path | None = None, database_path: Path | None = None) 
         story_skills=story_skills,
         writing_skills=writing_skills,
         memory_manager=memory_manager,
+        story_design=story_design,
     )
+    projects = ProjectService(
+        store=repository,
+        detail_reader=AggregatingProjectDetailReader(
+            repository,
+            story_skills,
+            writing_skills,
+        ),
+        recover_handler=service.recover_known_issue,
+    )
+    service.projects = projects
     return AppContext(
         settings,
         service,
         repository,
         root / "apps" / "web",
         analytics=analytics_service,
+        projects=projects,
+        story_design=story_design,
     )
