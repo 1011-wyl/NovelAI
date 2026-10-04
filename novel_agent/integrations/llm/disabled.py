@@ -44,7 +44,7 @@ class DisabledRemoteGateway:
     def select_chapter_plan(self, *args: object, **kwargs: object) -> ChapterPlanSelection:
         self._blocked()
 
-    def write_chapter(self, *args: object, **kwargs: object) -> str:
+    def repair_chapter_plan(self, *args: object, **kwargs: object) -> ChapterPlan:
         self._blocked()
 
     def revise_chapter(self, *args: object, **kwargs: object) -> str:

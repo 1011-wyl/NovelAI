@@ -35,10 +35,21 @@
 
 ## 立即运行
 
-要求：Python 3.11 或更高版本，并安装 `pydantic>=2.8`。
+要求：Python 3.11 或更高版本，并安装 `pydantic>=2.8`；前端构建需要 Node.js 20+。
+
+首次或更新前端后：
 
 ```powershell
 cd D:\NovelAgent
+cd apps\web
+npm ci
+npm run build
+cd ..\..
+```
+
+启动服务：
+
+```powershell
 python -m novel_agent serve
 ```
 
@@ -46,6 +57,18 @@ python -m novel_agent serve
 
 ```powershell
 .\run.ps1
+```
+
+若缺少 `apps/web/dist/index.html`，启动脚本会提示先完成前端构建。
+
+开发时可用 Vite 热更新：
+
+```powershell
+# 终端 1
+python -m novel_agent serve
+# 终端 2
+cd apps\web
+npm run dev
 ```
 
 联网调研与语义检索默认关闭。启用方式见 `docs/API_SETUP.md`；搜索和 Embedding
@@ -59,18 +82,35 @@ python -m novel_agent list
 python -m novel_agent tick --limit 1
 ```
 
-运行测试：
+运行测试（推荐完整验证顺序；前端构建必须在依赖 `apps/web/dist` 的 Python 测试之前）：
 
 ```powershell
+# 一键：lint / type-check / vitest / build / Playwright(E2E 独立临时库) / Python
+.\scripts\verify-frontend.ps1
+```
+
+或分步：
+
+```powershell
+cd apps\web
+npm ci
+npm run lint
+npm run type-check
+npm run test
+npm run build
+npm run test:e2e
+cd ..\..
 python -m unittest discover -s tests -v
 ```
+
+说明：`apps/web/dist` 被 Git 忽略。新克隆仓库请先 `npm ci && npm run build`，否则依赖 SPA 产物的 Python 测试会跳过并提示构建命令。Playwright 使用独立临时数据库（`NOVEL_AGENT_DATABASE` 指向系统临时目录），每条用例前后清理测试项目，并在测试服务器退出后删除本轮临时目录；它不会读写 `data/novel_agent.db`。
 
 ## 目录
 
 ```text
 apps/
   api/                 HTTP 服务入口
-  web/                 零外部依赖的自主作者控制台
+  web/                 Vue 3 + Vite 前端（构建产物在 apps/web/dist）
   agent_worker/        独立章节任务入口
   scheduler_worker/    本地储备补充入口
 novel_agent/

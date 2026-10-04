@@ -31,13 +31,15 @@ class AuditingGateway(OfflineLLMGateway):
         context: ContinuityContext,
         skill_instructions: str,
     ) -> ReviewReport:
+        from novel_agent.features.chapter_review.quality_spec import READABILITY_DIMENSIONS
+
         self.review_calls += 1
         self.last_context = context
         self.last_skill_instructions = skill_instructions
         if self.review_calls == 1:
             return ReviewReport(
                 decision=ReviewDecision.REVISE,
-                score=70,
+                score=55,
                 issues=[
                     ReviewIssue(
                         category="character_knowledge",
@@ -47,13 +49,35 @@ class AuditingGateway(OfflineLLMGateway):
                         evidence=["测试审校证据"],
                     )
                 ],
-                checks={"character_knowledge": 70},
+                checks={"character_knowledge": 55, **{key: 55.0 for key in READABILITY_DIMENSIONS}},
             )
         return ReviewReport(
             decision=ReviewDecision.PASS,
             score=96,
             checks={"character_knowledge": 96},
         )
+
+    def review_readability(self, context):
+        from novel_agent.features.chapter_review.quality_spec import READABILITY_DIMENSIONS
+
+        # Story-skills MAJOR alone must not veto; keep readability below the pass line
+        # so the chapter still fails for retry under the unified score rule.
+        if self.review_calls == 0:
+            return ReviewReport(
+                decision=ReviewDecision.REVISE,
+                score=55,
+                checks={key: 55.0 for key in READABILITY_DIMENSIONS},
+                issues=[
+                    ReviewIssue(
+                        category="readability.scene_causality",
+                        severity=IssueSeverity.MAJOR,
+                        message="场景因果偏弱",
+                        suggestion="补足行动后果",
+                        evidence=["测试可读性证据"],
+                    )
+                ],
+            )
+        return super().review_readability(context)
 
 
 class StorySkillsRuntimeTests(unittest.TestCase):
@@ -90,13 +114,14 @@ class StorySkillsRuntimeTests(unittest.TestCase):
             self.runtime.definitions["revision-continuity"].instructions,
         )
 
-    def test_workflow_automatically_invokes_skill_and_rechecks_after_revision(self) -> None:
+    def test_workflow_invokes_skill_and_holds_major_issue_for_retry(self) -> None:
         gateway = AuditingGateway()
         service = NovelAgentService(
             repository=self.repository,
             gateway=gateway,
             search=DisabledSearchAdapter(),
             story_skills=self.runtime,
+            max_revision_attempts=0,
         )
         project = service.create_novel(self.request())
 
@@ -106,7 +131,11 @@ class StorySkillsRuntimeTests(unittest.TestCase):
         self.assertIsNotNone(gateway.last_context)
         self.assertEqual(gateway.last_context.project_id, project.id)
         self.assertIn("Continuity Audit Checklist", gateway.last_skill_instructions)
-        self.assertEqual(result.review.decision, ReviewDecision.PASS)
+        self.assertEqual(result.review.decision, ReviewDecision.REVISE)
+        self.assertEqual(result.chapter.status.value, "FAILED")
+        self.assertTrue(
+            any(issue.severity == IssueSeverity.MAJOR for issue in result.review.issues)
+        )
         self.assertIn("story_skills_semantic", result.review.checks)
         self.assertEqual(
             [event.node for event in result.events].count("StorySkillsAudit"),

@@ -23,6 +23,7 @@ DETAIL_KEYS = {
     "semantic_document_count",
     "reserve_count",
     "skills",
+    "chapter_failures",
 }
 
 

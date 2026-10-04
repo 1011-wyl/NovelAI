@@ -29,6 +29,17 @@ def _env_bool(name: str, default: bool) -> bool:
     raise ValueError(f"{name} 只能填写 true/false、1/0、yes/no 或 on/off")
 
 
+def _env_revision_attempts() -> int:
+    raw = os.getenv("MAX_REVISION_ATTEMPTS", "2")
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError("MAX_REVISION_ATTEMPTS 必须是 0 到 5 的整数") from exc
+    if value < 0 or value > 5:
+        raise ValueError("MAX_REVISION_ATTEMPTS 必须是 0 到 5 的整数，0 表示审核首稿后不自动修订")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     mode: str
@@ -136,7 +147,7 @@ class Settings:
             publisher_base_url=os.getenv("PUBLISHER_BASE_URL") or None,
             story_skills_enabled=_env_bool("STORY_SKILLS_ENABLED", True),
             oh_story_enabled=_env_bool("OH_STORY_ENABLED", True),
-            max_revision_attempts=int(os.getenv("MAX_REVISION_ATTEMPTS", "2")),
+            max_revision_attempts=_env_revision_attempts(),
             memory_budget_tokens=max(
                 1000, int(os.getenv("MEMORY_BUDGET_TOKENS", "6000"))
             ),

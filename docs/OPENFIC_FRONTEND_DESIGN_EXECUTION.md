@@ -1,5 +1,7 @@
 # NovelAgent 前端视觉改造执行书：借鉴 OpenFic
 
+> **已被取代（2026-10-02）**：本文关于“保留原生 HTML/CSS/JavaScript、不引入 Vite”的约束已失效。请改按 [`docs/NOVEL_LIBRARY_VUE3_CURSOR_EXECUTION.md`](NOVEL_LIBRARY_VUE3_CURSOR_EXECUTION.md) 实施；前端唯一运行时为 Vue 3 + Vite，静态根为 `apps/web/dist`。
+
 > 交给 Cursor 执行。本文是设计卡片与实施任务书；编写本文时未修改前端代码。
 
 ## 0. 给 Cursor 的任务指令

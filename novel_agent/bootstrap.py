@@ -6,14 +6,20 @@ from pathlib import Path
 from novel_agent.api import AppContext
 from novel_agent.config import Settings
 from novel_agent.features.analytics.service import AnalyticsService
+from novel_agent.features.opening_repair.service import OpeningRepairService
 from novel_agent.features.projects.detail_reader import AggregatingProjectDetailReader
 from novel_agent.features.projects.service import ProjectService
 from novel_agent.features.story_design.service import StoryDesignService
 from novel_agent.integrations.factories import (
     build_embedding_gateway,
-    build_llm_gateway,
     build_search_adapter,
 )
+from novel_agent.features.llm_settings.factory import LLMClientFactory
+from novel_agent.features.llm_settings.repository import LLMSettingsRepository
+from novel_agent.features.llm_settings.resolver import EffectiveLLMConfigResolver
+from novel_agent.features.llm_settings.runtime import SnapshotLLMGateway
+from novel_agent.features.llm_settings.secret_store import build_secret_store
+from novel_agent.features.llm_settings.service import LLMSettingsService
 from novel_agent.memory_manager import MemoryManager
 from novel_agent.repository import SQLiteRepository
 from novel_agent.service import NovelAgentService
@@ -29,9 +35,20 @@ def create_context(root: Path | None = None, database_path: Path | None = None) 
     repository = SQLiteRepository(settings.database_path)
     analytics_store = repository.analytics
     analytics_service = AnalyticsService(analytics_store)
-    gateway = build_llm_gateway(
-        settings,
+    secrets = build_secret_store()
+    llm_repo = LLMSettingsRepository(repository)
+    llm_resolver = EffectiveLLMConfigResolver(settings, llm_repo, secrets)
+    llm_factory = LLMClientFactory(
+        reasoning_budget_factor=settings.llm_reasoning_budget_factor,
         on_call=analytics_store.save_token_usage,
+    )
+    gateway = SnapshotLLMGateway(llm_resolver, llm_factory)
+    llm_settings = LLMSettingsService(
+        llm_repo,
+        secrets,
+        llm_resolver,
+        llm_factory,
+        on_change=gateway.invalidate,
     )
     search = build_search_adapter(settings)
     embedding = build_embedding_gateway(settings)
@@ -81,8 +98,10 @@ def create_context(root: Path | None = None, database_path: Path | None = None) 
         settings,
         service,
         repository,
-        root / "apps" / "web",
+        root / "apps" / "web" / "dist",
         analytics=analytics_service,
         projects=projects,
         story_design=story_design,
+        opening_repair=OpeningRepairService(repository, repository.opening_repair),
+        llm_settings=llm_settings,
     )

@@ -1,5 +1,7 @@
 # NovelAI 仪表盘改造：Cursor 前后端任务执行书
 
+> **注意（2026-10-02）**：仪表盘业务能力仍有效，但前端已迁移为 Vue 3。页面实现位于 `apps/web/src/features/analytics/`，勿再按原生 `js/features/analytics` 路径开发。总体入口与书架流程以 [`docs/NOVEL_LIBRARY_VUE3_CURSOR_EXECUTION.md`](NOVEL_LIBRARY_VUE3_CURSOR_EXECUTION.md) 为准。
+
 > 目标：在 NovelAI 中实现与 OpenFic 仪表盘主内容区一致的页面结构、信息层级、交互和数据能力。
 >
 > 本文只是一份实施任务书。编写本文时没有修改 NovelAI 的前端、后端、数据库或用户操作流程。

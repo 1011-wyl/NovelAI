@@ -18,7 +18,7 @@ from novel_agent.models import (
     new_id,
     utc_now,
 )
-from novel_agent.repository import SQLiteRepository
+from novel_agent.repository import RepositoryError, SQLiteRepository
 from novel_agent.service import NovelAgentService
 from novel_agent.workflow import WorkflowBlocked
 
@@ -36,30 +36,9 @@ class RecordingQualityGateway(OfflineLLMGateway):
         self.plan_previous_excerpts.append(kwargs.get("previous_chapter_excerpt", ""))
         return super().plan_chapter(*args, **kwargs)
 
-    def write_chapter(
-        self,
-        request,
-        brief,
-        plan,
-        protagonist_name,
-        research_notes,
-        character_roster=None,
-        genre_prose_card="",
-        compact_characters=None,
-        previous_chapter_excerpt="",
-    ):
-        self.writer_previous_excerpts.append(previous_chapter_excerpt)
-        return super().write_chapter(
-            request,
-            brief,
-            plan,
-            protagonist_name,
-            research_notes,
-            character_roster,
-            genre_prose_card,
-            compact_characters,
-            previous_chapter_excerpt,
-        )
+    def write_chapter(self, *args, **kwargs):
+        self.writer_previous_excerpts.append(kwargs.get("previous_chapter_excerpt", ""))
+        return super().write_chapter(*args, **kwargs)
 
     def review_readability(self, context):
         self.readability_previous_excerpts.append(context.previous_chapter_excerpt)
@@ -190,7 +169,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertLessEqual(len(readability_context.previous_chapter_excerpt), 800)
         nodes = [event.node for event in second.events]
         self.assertIn("Plan", nodes)
-        self.assertIn("ReadabilityReview", nodes)
+        self.assertTrue(
+            "ParallelReview" in nodes or "ReadabilityReview" in nodes,
+            nodes,
+        )
 
     def test_quality_retry_stays_active_and_reuses_plan(self) -> None:
         class RetryGateway(RecordingQualityGateway):
@@ -199,6 +181,8 @@ class WorkflowTests(unittest.TestCase):
                 self.review_calls = 0
 
             def review_readability(self, context):
+                from novel_agent.features.chapter_review.quality_spec import READABILITY_DIMENSIONS
+
                 self.review_calls += 1
                 if self.review_calls == 1:
                     return ReviewReport(
@@ -206,13 +190,14 @@ class WorkflowTests(unittest.TestCase):
                         score=55,
                         issues=[
                             ReviewIssue(
-                                category="opening_hook",
+                                category="readability.opening_hook",
                                 severity=IssueSeverity.MAJOR,
-                                message="开篇缺少即时冲突",
-                                suggestion="用正在发生的具体危险重写开篇",
+                                message="开篇偏弱，对话节奏偏散",
+                                suggestion="补足具体场景并收紧对话",
+                                evidence=["开篇缺少现场压力"],
                             )
                         ],
-                        checks={"opening_hook": 70},
+                        checks={key: 55.0 for key in READABILITY_DIMENSIONS},
                     )
                 return super().review_readability(context)
 
@@ -344,6 +329,23 @@ class WorkflowTests(unittest.TestCase):
         self.assertIsNone(repository.get_setting(f"rework_feedback:{second.id}"))
         self.assertEqual(repository.get_chapter(first.id).status, ChapterStatus.READY)
 
+    def test_rework_feedback_survives_plan_persist_failure(self) -> None:
+        repository = self.service.repository
+        project = self.service.create_novel(self.request(False))
+        first = self.service.generate_next_chapter(project.id).chapter
+        self.service.rework_chapter(project.id, 1, feedback="补写因果", mode="replan")
+        original = repository.persist_chapter_plan_and_consume_rework
+
+        def boom(*_args, **_kwargs):
+            raise RepositoryError("injected persist fail")
+
+        repository.persist_chapter_plan_and_consume_rework = boom  # type: ignore[method-assign]
+        with self.assertRaises(RepositoryError):
+            self.service.generate_next_chapter(project.id)
+        repository.persist_chapter_plan_and_consume_rework = original  # type: ignore[method-assign]
+        self.assertEqual(repository.get_setting(f"rework_feedback:{first.id}"), "补写因果")
+        self.assertEqual(repository.get_setting(f"rework_mode:{first.id}"), "replan")
+
     def test_legacy_protagonist_biography_is_normalized_to_name(self) -> None:
         brief = self.service.gateway.create_brief(self.request(False)).model_dump(mode="json")
         biography = "方远，前世在末世中挣扎十年，重生后冷静果断"
@@ -417,6 +419,71 @@ class WorkflowTests(unittest.TestCase):
         restored_chapter = repository.get_chapter(chapter.id)
         self.assertEqual(restored_chapter.status, ChapterStatus.PLANNED)
         self.assertEqual(restored_chapter.version, 1)
+
+    def test_chapter_one_binds_first_anchor_with_empty_history(self) -> None:
+        gateway = RecordingQualityGateway()
+        with tempfile.TemporaryDirectory() as folder:
+            service = NovelAgentService(
+                repository=SQLiteRepository(Path(folder) / "anchor.db"),
+                gateway=gateway,
+                search=DisabledSearchAdapter(),
+            )
+            project = service.create_novel(self.request(False))
+            result = service.generate_next_chapter(project.id)
+            characters = service.repository.list_characters(project.id)
+        self.assertEqual(result.chapter.status, ChapterStatus.READY)
+        self.assertIn("异常征兆", result.chapter.title)
+        self.assertEqual(gateway.plan_previous_excerpts[0], "")
+        self.assertNotIn("承接上一章", result.chapter.plan.objective if result.chapter.plan else "")
+        self.assertNotIn("异常来源", result.chapter.content or "")
+        for item in characters:
+            rels = (item.current_state or {}).get("relationships") or {}
+            blob = " ".join(str(value) for value in rels.values())
+            self.assertNotIn("效忠", blob)
+            self.assertNotIn("后来", blob)
+
+    def test_structural_failure_replans_instead_of_reusing(self) -> None:
+        class StructuralGateway(RecordingQualityGateway):
+            def __init__(self) -> None:
+                super().__init__()
+                self.review_calls = 0
+
+            def review_readability(self, context):
+                from novel_agent.features.chapter_review.quality_spec import READABILITY_DIMENSIONS
+
+                self.review_calls += 1
+                if self.review_calls == 1:
+                    return ReviewReport(
+                        decision=ReviewDecision.REVISE,
+                        score=40,
+                        issues=[
+                            ReviewIssue(
+                                category="character_state",
+                                severity=IssueSeverity.MAJOR,
+                                message="人物关系与开篇初态冲突",
+                                suggestion="按初始关系重写",
+                                evidence=["关系与初态冲突"],
+                            )
+                        ],
+                        checks={key: 40.0 for key in READABILITY_DIMENSIONS},
+                    )
+                return super().review_readability(context)
+
+        gateway = StructuralGateway()
+        with tempfile.TemporaryDirectory() as folder:
+            service = NovelAgentService(
+                repository=SQLiteRepository(Path(folder) / "struct.db"),
+                gateway=gateway,
+                search=DisabledSearchAdapter(),
+                max_revision_attempts=0,
+            )
+            project = service.create_novel(self.request(False))
+            failed = service.generate_next_chapter(project.id)
+            self.assertEqual(failed.chapter.status, ChapterStatus.FAILED)
+            recovered = service.generate_next_chapter(project.id)
+        self.assertEqual(recovered.chapter.status, ChapterStatus.READY)
+        self.assertEqual(gateway.plan_calls, 2)
+        self.assertNotIn("PlanReuse", [event.node for event in recovered.events])
 
 
 if __name__ == "__main__":

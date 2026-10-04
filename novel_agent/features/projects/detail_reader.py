@@ -71,6 +71,11 @@ class AggregatingProjectDetailReader:
             "research_sources": self._source.list_research_sources(project_id),
             "semantic_document_count": self._source.semantic_document_count(project_id),
             "reserve_count": self._source.reserve_count(project_id),
+            "chapter_failures": (
+                self._source.list_chapter_failure_diagnostics(project_id)
+                if hasattr(self._source, "list_chapter_failure_diagnostics")
+                else []
+            ),
             "skills": {
                 "story_skills": self._story_skills.readiness(),
                 "oh_story": {

@@ -59,10 +59,12 @@ def brief_payload() -> dict:
 
 
 def plan_payload(number: int = 1) -> dict:
+    openings = {1: "断电", 2: "清点", 3: "第一次冲突"}
+    title = openings.get(number, "清点")
     return {
         "number": number,
-        "title": f"第{number}章 清点",
-        "objective": "确认仓库可用物资",
+        "title": f"第{number}章 {title}",
+        "objective": title if number != 1 else "断电后用仓储经验确认可用物资",
         "conflict": "时间不足且队伍互不信任",
         "turning_point": "封条日期与灾难时间不符",
         "hook": "地下库传来敲击声",
@@ -250,6 +252,15 @@ class DeepSeekGatewayTests(unittest.TestCase):
         request = self.request()
         brief = CreativeBrief.model_validate(brief_payload())
         plan = ChapterPlan.model_validate(plan_payload())
+        from novel_agent.features.chapter_review.quality_spec import WRITE_TEMPERATURE, build_writer_quality_contract
+        from novel_agent.features.chapter_review.revision_context import ChapterRevisionContext
+        from novel_agent.models import ReviewDecision, ReviewReport
+
+        contract = build_writer_quality_contract(
+            chapter_number=1,
+            target_chars=1200,
+            previous_chapter_excerpt="地下库门后的敲击突然停了。",
+        )
         content = gateway.write_chapter(
             request,
             brief,
@@ -257,15 +268,40 @@ class DeepSeekGatewayTests(unittest.TestCase):
             "林川",
             [],
             previous_chapter_excerpt="地下库门后的敲击突然停了。",
+            quality_contract=contract,
         )
-        revised = gateway.revise_chapter(content, ["增加行动细节"], 1200)
+        revised = gateway.revise_chapter(
+            ChapterRevisionContext(
+                project_id="p1",
+                chapter_number=1,
+                target_chars=1200,
+                creative_request={"idea": request.idea},
+                creative_brief={"synopsis": brief.synopsis},
+                chapter_plan=plan.model_dump(mode="json"),
+                quality_contract=contract,
+                current_draft=content,
+                previous_chapter_excerpt="地下库门后的敲击突然停了。",
+                character_archives=[],
+                world_rules=list(brief.world_rules),
+                review=ReviewReport(
+                    decision=ReviewDecision.REVISE,
+                    score=55,
+                    issues=[],
+                ),
+                revision_number=1,
+            )
+        )
         self.assertIn("正文内容", content)
         self.assertIn("修订后的正文", revised)
         self.assertNotIn("response_format", transport.calls[0][2])
+        self.assertEqual(transport.calls[0][2]["temperature"], WRITE_TEMPERATURE)
         self.assertIn(
             "地下库门后的敲击突然停了",
             transport.calls[0][2]["messages"][1]["content"],
         )
+        self.assertIn("quality_contract", transport.calls[0][2]["messages"][1]["content"])
+        self.assertIn("700～1700 字", transport.calls[0][2]["messages"][1]["content"])
+        self.assertIn("标点符号计入字数", transport.calls[0][2]["messages"][1]["content"])
 
     def test_deslop_uses_pinned_skill_as_a_bounded_language_edit(self) -> None:
         transport = RecordingTransport([completion("第1章 清点\n\n林川把清单压在桌上。")])
@@ -363,7 +399,8 @@ class DeepSeekGatewayTests(unittest.TestCase):
         self.assertEqual(set(report.checks), set(readability_payload()["checks"]))
         prompt = transport.calls[0][2]["messages"][1]["content"]
         self.assertIn("scene_causality", prompt)
-        self.assertIn("不得因为篇幅足够", prompt)
+        self.assertIn("严格大于", prompt)
+        self.assertIn("不得用单项阈值或严重度制造第二套通过条件", prompt)
 
     def test_readability_review_synthesizes_actionable_issue_for_low_dimension(self) -> None:
         payload = readability_payload()
@@ -382,9 +419,11 @@ class DeepSeekGatewayTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(report.decision, ReviewDecision.REVISE)
+        # Weak dimension still yields a revision issue, but unified score > 60 passes.
+        self.assertEqual(report.decision, ReviewDecision.PASS)
+        self.assertGreater(report.score, 60.0)
         self.assertIn(
-            "readability_character_agency",
+            "readability.character_agency",
             {issue.category for issue in report.issues},
         )
 
@@ -514,7 +553,7 @@ class DeepSeekGatewayTests(unittest.TestCase):
             for i in range(1, 16)
         ]
         paragraphs.append("新加入的周宁守在地下库门口。敲击声响起，林川决定在下一章确认声音来源。")
-        chapter_text = "第1章 清点\n\n" + "\n\n".join(paragraphs)
+        chapter_text = "第1章 断电\n\n" + "\n\n".join(paragraphs)
         character_memory = {
             "characters": [
                 {

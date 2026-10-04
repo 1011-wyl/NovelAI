@@ -10,6 +10,7 @@ from novel_agent.models import (
     AssistantMessageCreate,
     AssistantMode,
     AssistantSession,
+    ChapterAcceptWithWarningsRequest,
     ChapterDraftUpdate,
     ChapterEditDraft,
     ChapterRevisionAnalysis,
@@ -44,14 +45,27 @@ class ChapterWorkspaceMixin:
         chapter = self.repository.get_chapter_by_number(project_id, chapter_number)
         if chapter is None:
             raise RepositoryError(f"找不到第{chapter_number}章")
+        from novel_agent.features.chapter_planning.workspace_capabilities import (
+            compute_accept_with_warnings,
+            workspace_capabilities,
+        )
+
         draft = self.repository.get_chapter_edit_draft(project_id, chapter_number)
-        editable = chapter.status == ChapterStatus.READY
+        latest_report = self.repository.get_latest_review_report(chapter.id)
+        content = (draft.content if draft is not None else chapter.content) or ""
+        caps = workspace_capabilities(
+            chapter.status.value,
+            project.status.value,
+            can_accept_with_warnings=compute_accept_with_warnings(latest_report, content),
+        )
+        editable = caps["edit_draft"]
         read_only_reason = None
-        if not editable:
-            read_only_reason = f"仅 READY 章节可修订（当前 {chapter.status.value}）"
-        elif project.status == ProjectStatus.ARCHIVED:
-            editable = False
+        if project.status == ProjectStatus.ARCHIVED:
             read_only_reason = "归档项目不可修订"
+        elif not caps["edit_draft"]:
+            read_only_reason = f"当前章节状态为 {chapter.status.value}，不能编辑草稿"
+        elif not caps["commit_revision"] and caps["submit_for_review"]:
+            read_only_reason = "未通过审核：可以编辑草稿并重新送审，但不能直接应用为正式章节"
         chapters = self.repository.list_chapters(project_id)
         later = [c for c in chapters if c.number > chapter_number]
         downstream = {
@@ -70,10 +84,12 @@ class ChapterWorkspaceMixin:
             "chapter": chapter,
             "draft": draft,
             "editable": editable,
+            "capabilities": caps,
             "read_only_reason": read_only_reason,
             "downstream": downstream,
             "versions": versions,
             "sessions": sessions,
+            "latest_review": latest_report,
         }
 
     def save_chapter_edit_draft(
@@ -115,8 +131,23 @@ class ChapterWorkspaceMixin:
             raise EditConflictError("工作草稿基于的正式版本已过期")
 
         chapter = self.repository.get_chapter_by_number(project_id, chapter_number)
-        if chapter is None or chapter.status != ChapterStatus.READY:
-            raise ChapterNotEditableError("只有 READY 章节可以提交修订")
+        if chapter is None:
+            raise RepositoryError(f"找不到第{chapter_number}章")
+        from novel_agent.features.chapter_planning.workspace_capabilities import (
+            workspace_capabilities,
+        )
+        from novel_agent.features.opening_repair.errors import ChapterActionNotAllowedError
+
+        caps = workspace_capabilities(chapter.status.value, project.status.value)
+        if not caps["commit_revision"]:
+            error = ChapterActionNotAllowedError(
+                "未通过审核的章节不能通过普通应用修订成为正式正文，请重新送审"
+                if chapter.status == ChapterStatus.FAILED
+                else f"当前章节状态为 {chapter.status.value}，不能应用修订"
+            )
+            if chapter.status == ChapterStatus.FAILED:
+                error.code = "FAILED_DRAFT_REVIEW_REQUIRED"
+            raise error
 
         characters = self.repository.list_characters(project_id)
         with llm_call_scope(
@@ -254,8 +285,15 @@ class ChapterWorkspaceMixin:
         session = self.repository.get_assistant_session(session_id)
         project = self._assert_workspace_project(session.project_id)
         chapter = self.repository.get_chapter(session.chapter_id)
-        if chapter.status != ChapterStatus.READY:
-            raise ChapterNotEditableError("只有 READY 章节可以使用修订助手")
+        from novel_agent.features.chapter_planning.workspace_capabilities import (
+            workspace_capabilities,
+        )
+
+        caps = workspace_capabilities(chapter.status.value, project.status.value)
+        if not caps["use_assistant"]:
+            raise ChapterNotEditableError(
+                f"当前章节状态为 {chapter.status.value}，不能使用修订助手"
+            )
 
         working = self.repository.get_or_create_working_copy(
             session.project_id, chapter.number
@@ -386,6 +424,219 @@ class ChapterWorkspaceMixin:
         if project.status == ProjectStatus.ARCHIVED:
             raise ChapterNotEditableError("归档项目不可修订")
         return project
+
+    def submit_failed_chapter_review(
+        self,
+        project_id: str,
+        chapter_number: int,
+        request: ChapterRevisionCommitRequest,
+    ) -> dict[str, Any]:
+        from novel_agent.features.chapter_planning.context import build_planning_context
+        from novel_agent.features.chapter_planning.validation import (
+            validate_plan_against_anchor,
+        )
+        from novel_agent.features.chapter_planning.workspace_capabilities import (
+            workspace_capabilities,
+        )
+        from novel_agent.features.chapter_review.quality_gate import ChapterQualityGate
+        from novel_agent.features.chapter_review.quality_spec import (
+            build_reviewer_quality_contract,
+        )
+        from novel_agent.features.opening_repair.errors import ChapterActionNotAllowedError
+
+        project = self._assert_workspace_project(project_id)
+        chapter = self.repository.get_chapter_by_number(project_id, chapter_number)
+        if chapter is None:
+            raise RepositoryError(f"找不到第{chapter_number}章")
+        caps = workspace_capabilities(chapter.status.value, project.status.value)
+        if not caps["submit_for_review"]:
+            raise ChapterActionNotAllowedError("当前章节不能重新送审")
+        draft = self.repository.get_chapter_edit_draft(project_id, chapter_number)
+        if draft is None:
+            raise EditConflictError("没有可提交的工作草稿")
+        if draft.content_hash != request.expected_draft_hash:
+            raise EditConflictError("工作草稿已被其他操作更新")
+        if draft.base_version != request.base_version:
+            raise EditConflictError("工作草稿基于的正式版本已过期")
+        planning = build_planning_context(
+            project_id=project_id,
+            chapter_number=chapter_number,
+            brief=project.brief,
+            chapters=self.repository.list_chapters(project_id),
+            timeline_source=self.repository,
+        )
+        plan = chapter.plan
+        if plan is None:
+            raise ChapterActionNotAllowedError("缺少章节细纲，请先回到工作台重新规划")
+        issues = validate_plan_against_anchor(
+            plan,
+            chapter_number=chapter_number,
+            context=planning,
+            brief=project.brief,
+            character_archives=self.repository.list_characters(project_id),
+        )
+        if issues:
+            return {
+                "passed": False,
+                "chapter": chapter,
+                "error": "CHAPTER_PLAN_ANCHOR_MISMATCH",
+                "message": "细纲仍未绑定开篇锚点，不能转为正式章节",
+                "details": issues,
+                "draft": draft,
+            }
+        characters = self.repository.list_characters(project_id)
+        quality_contract = build_reviewer_quality_contract(
+            chapter_number=chapter_number,
+            target_chars=project.request.chapter_target_chars,
+            opening_anchor=planning.opening_anchor,
+            previous_chapter_excerpt=planning.previous_chapter_excerpt if chapter_number > 1 else "",
+            exclude=list(project.request.exclude),
+        )
+        report = ChapterQualityGate(
+            self.gateway,
+            self.story_skills,
+            self.writing_skills,
+        ).review(
+            repository=self.repository,
+            project=project,
+            plan=plan,
+            content=draft.content,
+            protagonist_name=project.brief.protagonist_name,
+            previous_chapter_excerpt=planning.previous_chapter_excerpt if chapter_number > 1 else "",
+            has_research=bool(self.repository.list_research_sources(project_id)),
+            characters=characters,
+            opening_anchor=planning.opening_anchor,
+            quality_contract=quality_contract,
+        )
+        self.repository.save_review_report(chapter.id, "review-submit", report)
+        if report.decision != ReviewDecision.PASS:
+            return {
+                "passed": False,
+                "chapter": chapter,
+                "review": report,
+                "draft": draft,
+                "message": "重新送审未通过质量门，草稿已保留",
+            }
+        analysis = self.gateway.analyze_chapter_revision(
+            project=project,
+            chapter=chapter,
+            title=draft.title,
+            content=draft.content,
+            characters=characters,
+        )
+        result = self.repository.commit_failed_chapter_review(
+            project_id,
+            chapter_number,
+            expected_base_version=request.base_version,
+            expected_draft_hash=request.expected_draft_hash,
+            analysis=analysis,
+            review=report,
+            base_characters=self._character_records(
+                project_id, project.request, project.brief
+            ),
+        )
+        return {"passed": True, "result": result, "review": report}
+
+    def accept_failed_chapter_with_warnings(
+        self,
+        project_id: str,
+        chapter_number: int,
+        request: ChapterAcceptWithWarningsRequest,
+    ) -> dict[str, Any]:
+        from novel_agent.features.chapter_planning.workspace_capabilities import (
+            compute_accept_with_warnings,
+            workspace_capabilities,
+        )
+        from novel_agent.features.chapter_review.errors import QualityOverrideNotAllowedError
+        from novel_agent.features.opening_repair.errors import ChapterActionNotAllowedError
+
+        if not request.confirm:
+            raise ChapterActionNotAllowedError("必须显式确认后才能接受当前版本并继续")
+        project = self._assert_workspace_project(project_id)
+        chapter = self.repository.get_chapter_by_number(project_id, chapter_number)
+        if chapter is None:
+            raise RepositoryError(f"找不到第{chapter_number}章")
+        draft = self.repository.get_chapter_edit_draft(project_id, chapter_number)
+        content = (draft.content if draft is not None else chapter.content) or ""
+        title = (draft.title if draft is not None else chapter.title) or chapter.title
+        latest_report = self.repository.get_latest_review_report(chapter.id)
+        caps = workspace_capabilities(
+            chapter.status.value,
+            project.status.value,
+            can_accept_with_warnings=compute_accept_with_warnings(latest_report, content),
+        )
+        if not caps["accept_with_warnings"]:
+            raise QualityOverrideNotAllowedError(
+                "当前章节仍有硬阻断或结构性问题，不能接受当前版本并继续",
+                details={
+                    "decision": latest_report.decision.value if latest_report else None,
+                    "issues": [
+                        {
+                            "category": issue.category,
+                            "severity": issue.severity.value,
+                            "message": issue.message,
+                        }
+                        for issue in (latest_report.issues if latest_report else [])
+                    ],
+                },
+            )
+        if draft is None:
+            from novel_agent.models import ChapterDraftUpdate
+            from novel_agent.text_normalize import draft_content_hash
+
+            expected = draft_content_hash(title, content)
+            if expected != request.expected_draft_hash:
+                raise EditConflictError("当前正式草稿哈希与请求不一致")
+            if chapter.version != request.base_version:
+                raise EditConflictError("工作草稿基于的正式版本已过期")
+            draft = self.save_chapter_edit_draft(
+                project_id,
+                chapter_number,
+                ChapterDraftUpdate(
+                    base_version=chapter.version,
+                    title=title,
+                    content=content,
+                ),
+            )
+        if draft.content_hash != request.expected_draft_hash:
+            raise EditConflictError("工作草稿已被其他操作更新")
+        if draft.base_version != request.base_version:
+            raise EditConflictError("工作草稿基于的正式版本已过期")
+        characters = self.repository.list_characters(project_id)
+        analysis = self.gateway.analyze_chapter_revision(
+            project=project,
+            chapter=chapter,
+            title=draft.title,
+            content=draft.content,
+            characters=characters,
+        )
+        accepted_report = (latest_report or ReviewReport(
+            decision=ReviewDecision.REVISE,
+            score=0,
+        )).model_copy(
+            update={
+                "accepted_with_warnings": True,
+                "next_action": "accepted_with_warnings",
+            }
+        )
+        self.repository.save_review_report(chapter.id, "accept-with-warnings", accepted_report)
+        result = self.repository.commit_failed_chapter_review(
+            project_id,
+            chapter_number,
+            expected_base_version=request.base_version,
+            expected_draft_hash=request.expected_draft_hash,
+            analysis=analysis,
+            review=accepted_report,
+            base_characters=self._character_records(
+                project_id, project.request, project.brief
+            ),
+        )
+        return {
+            "passed": True,
+            "accepted_with_warnings": True,
+            "result": result,
+            "review": accepted_report,
+        }
 
     def _recent_summaries(self, project_id: str, chapter_number: int) -> list[str]:
         chapters = self.repository.list_chapters(project_id)

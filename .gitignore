@@ -18,3 +18,7 @@ data/
 exports/
 .tmp/
 .venv*/
+artifacts/
+apps/web/playwright-report/
+apps/web/test-results/
+apps/web/blob-report/

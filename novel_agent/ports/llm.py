@@ -16,11 +16,13 @@ from novel_agent.models import (
     ContinuityContext,
     CreativeBrief,
     NovelCreateRequest,
+    OpeningChapterAnchor,
     ProjectRecord,
     ReadabilityContext,
     ReviewReport,
     WorldFactRecord,
 )
+from novel_agent.features.chapter_review.revision_context import ChapterRevisionContext
 
 
 class LLMGateway(Protocol):
@@ -49,6 +51,7 @@ class LLMGateway(Protocol):
         compact_world_facts: list[str] | None = None,
         compact_timeline: list[str] | None = None,
         previous_chapter_excerpt: str = "",
+        opening_anchor: OpeningChapterAnchor | None = None,
     ) -> ChapterPlan: ...
 
     def plan_chapter_candidates(
@@ -64,6 +67,7 @@ class LLMGateway(Protocol):
         compact_world_facts: list[str] | None = None,
         compact_timeline: list[str] | None = None,
         previous_chapter_excerpt: str = "",
+        opening_anchor: OpeningChapterAnchor | None = None,
     ) -> ChapterPlanBatch: ...
 
     def select_chapter_plan(
@@ -83,7 +87,18 @@ class LLMGateway(Protocol):
         genre_prose_card: str = "",
         compact_characters: list[str] | None = None,
         previous_chapter_excerpt: str = "",
+        opening_anchor: OpeningChapterAnchor | None = None,
+        quality_contract: dict | None = None,
     ) -> str: ...
+
+    def repair_chapter_plan(
+        self,
+        plan: ChapterPlan,
+        issues: list[str],
+        opening_anchor: OpeningChapterAnchor | None,
+        chapter_number: int,
+        brief: CreativeBrief,
+    ) -> ChapterPlan: ...
 
     def deslop_chapter(
         self,
@@ -93,7 +108,7 @@ class LLMGateway(Protocol):
         skill_instructions: str,
     ) -> str: ...
 
-    def revise_chapter(self, content: str, instructions: list[str], target_chars: int) -> str: ...
+    def revise_chapter(self, context: ChapterRevisionContext) -> str: ...
 
     def extract_character_memories(
         self,

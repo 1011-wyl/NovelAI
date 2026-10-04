@@ -125,6 +125,53 @@ class StoryDesignModelsCompatTests(unittest.TestCase):
                 {"genre": "末世", "idea": "想法", "unexpected": 1}
             )
 
+    def test_legacy_brief_without_time_fields_still_loads(self) -> None:
+        payload = json.loads(
+            (FIXTURES / "legacy_brief_protagonist.json").read_text(encoding="utf-8")
+        )
+        brief = CreativeBrief.model_validate(payload)
+        profile = brief.character_profiles[0]
+        self.assertEqual(profile.initial_relationships, {})
+        self.assertEqual(profile.future_relationships, {})
+        self.assertEqual(profile.stable_facts, [])
+        self.assertTrue(brief.opening_chapter_anchors)
+        self.assertEqual(brief.opening_chapter_anchors[0].number, 1)
+
+    def test_legacy_relationships_are_not_promoted_to_initial(self) -> None:
+        brief = CreativeBrief.model_validate(
+            {
+                "title_candidates": ["书名"],
+                "selected_title": "书名",
+                "synopsis": "简介",
+                "target_readers": "读者",
+                "selling_points": ["卖点"],
+                "protagonist": "顾宁",
+                "protagonist_name": "顾宁",
+                "protagonist_profile": "主角",
+                "character_profiles": [
+                    {
+                        "name": "顾铁山",
+                        "role": "supporting",
+                        "profile": "旧档案",
+                        "personality": [],
+                        "core_goal": "",
+                        "relationships": {"顾宁": "被救后效忠主角"},
+                    }
+                ],
+                "main_conflict": "冲突",
+                "world_rules": ["规则"],
+                "total_chapters": 100,
+                "volume_count": 1,
+                "opening_three_chapters": ["第一章异常征兆", "第二章选择代价", "第三章第一次对抗"],
+                "update_plan": "日更",
+                "style_guide": ["文风"],
+            }
+        )
+        tie_shan = next(item for item in brief.character_profiles if item.name == "顾铁山")
+        self.assertEqual(tie_shan.relationships["顾宁"], "被救后效忠主角")
+        self.assertEqual(tie_shan.initial_relationships, {})
+        self.assertEqual(brief.opening_chapter_anchors[0].core_event, "第一章异常征兆")
+
 
 if __name__ == "__main__":
     unittest.main()

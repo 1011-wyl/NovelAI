@@ -1,5 +1,7 @@
 # NovelAI 长篇小说创作闭环整体策划书
 
+> **前端架构更新（2026-10-02）**：文中“不引入新的大型前端框架”的阶段性非目标已被 [`docs/NOVEL_LIBRARY_VUE3_CURSOR_EXECUTION.md`](NOVEL_LIBRARY_VUE3_CURSOR_EXECUTION.md) 取代；默认入口为「我的小说」书架，前端唯一运行时为 Vue 3 + Vite。业务闭环、安全边界与成本约束仍有效。
+
 > 文档定位：产品策划、交互设计和后续技术实施的统一依据  
 > 当前阶段：策划稿，不代表功能已经实现  
 > 参考方向：NovelAI 现有生成与记忆能力、OpenFic 写作工作区与 AI 修改交互

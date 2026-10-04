@@ -5,7 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from novel_agent.features.projects.models import ProjectRecord, ProjectStatus
+from novel_agent.features.projects.models import (
+    ProjectMetadataUpdate,
+    ProjectRecord,
+    ProjectStatus,
+    ProjectSummary,
+)
 from novel_agent.features.projects.ports import ProjectDetailReader, ProjectStore
 
 
@@ -16,7 +21,11 @@ class ProjectService:
     recover_handler: Callable[[str], ProjectRecord] | None = None
 
     def list_projects(self) -> list[ProjectRecord]:
+        """Full records — prefer list_project_summaries for bookshelf HTTP."""
         return self.store.list_projects()
+
+    def list_project_summaries(self) -> list[ProjectSummary]:
+        return self.store.list_project_summaries()
 
     def get_detail(self, project_id: str) -> dict[str, object]:
         return self.detail_reader.read_project_detail(project_id)
@@ -32,6 +41,11 @@ class ProjectService:
         if not project.confirmed:
             raise ValueError("创作方案尚未确认")
         return self.store.update_project_status(project_id, ProjectStatus.ACTIVE)
+
+    def update_metadata(
+        self, project_id: str, update: ProjectMetadataUpdate
+    ) -> ProjectSummary:
+        return self.store.update_project_metadata(project_id, update.title)
 
     def delete(
         self, project_id: str, confirmation_title: str | None = None

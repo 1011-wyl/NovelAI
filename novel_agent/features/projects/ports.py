@@ -4,11 +4,17 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from novel_agent.features.projects.models import ProjectRecord, ProjectStatus
+from novel_agent.features.projects.models import (
+    ProjectRecord,
+    ProjectStatus,
+    ProjectSummary,
+)
 
 
 class ProjectStore(Protocol):
     def list_projects(self) -> list[ProjectRecord]: ...
+
+    def list_project_summaries(self) -> list[ProjectSummary]: ...
 
     def get_project(self, project_id: str) -> ProjectRecord: ...
 
@@ -17,6 +23,8 @@ class ProjectStore(Protocol):
     ) -> ProjectRecord: ...
 
     def confirm_project(self, project_id: str) -> ProjectRecord: ...
+
+    def update_project_metadata(self, project_id: str, title: str) -> ProjectSummary: ...
 
     def delete_project(self, project_id: str, *, force: bool = False) -> None: ...
 

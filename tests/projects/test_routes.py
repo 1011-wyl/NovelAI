@@ -29,6 +29,10 @@ class RecordingProjectService:
         self.calls.append(("list_projects", (), {}))
         return []
 
+    def list_project_summaries(self) -> list[Any]:
+        self.calls.append(("list_project_summaries", (), {}))
+        return []
+
     def get_detail(self, project_id: str) -> dict[str, object]:
         self.calls.append(("get_detail", (project_id,), {}))
         return {"project": {"id": project_id}}
@@ -48,6 +52,10 @@ class RecordingProjectService:
     def recover(self, project_id: str) -> dict[str, object]:
         self.calls.append(("recover", (project_id,), {}))
         return {"id": project_id, "status": "ACTIVE"}
+
+    def update_metadata(self, project_id: str, update: Any) -> dict[str, object]:
+        self.calls.append(("update_metadata", (project_id, update), {}))
+        return {"id": project_id, "title": getattr(update, "title", "")}
 
     def delete(
         self, project_id: str, confirmation_title: str | None = None
@@ -85,7 +93,7 @@ class ProjectsRouteDispatchTests(unittest.TestCase):
         self.assertEqual(listed.payload, {"items": []})
         self.assertEqual(
             [call[0] for call in service.calls],
-            ["list_projects", "get_detail", "confirm", "recover", "delete"],
+            ["list_project_summaries", "get_detail", "confirm", "recover", "delete"],
         )
         self.assertEqual(service.calls[-1][2]["confirmation_title"], "书名")
 
@@ -190,6 +198,7 @@ class ProjectsRouteCharacterizationTests(unittest.TestCase):
                 "semantic_document_count",
                 "reserve_count",
                 "skills",
+                "chapter_failures",
             },
         )
 

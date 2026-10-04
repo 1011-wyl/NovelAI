@@ -20,59 +20,19 @@ class RecordingWritingGateway(OfflineLLMGateway):
         self.deslop_calls = 0
         self.deslop_instructions = ""
 
-    def plan_chapter(
-        self,
-        request,
-        brief,
-        chapter_number,
-        recent_summaries,
-        open_threads,
-        character_roster=None,
-        writing_guidance=None,
-        compact_characters=None,
-        compact_world_facts=None,
-        compact_timeline=None,
-        previous_chapter_excerpt="",
-    ):
-        self.plan_guidance = writing_guidance or {}
-        return super().plan_chapter(
-            request,
-            brief,
-            chapter_number,
-            recent_summaries,
-            open_threads,
-            character_roster,
-            writing_guidance,
-            compact_characters,
-            compact_world_facts,
-            compact_timeline,
-            previous_chapter_excerpt,
+    def plan_chapter(self, *args, **kwargs):
+        self.plan_guidance = (
+            kwargs.get("writing_guidance")
+            or (args[6] if len(args) > 6 and isinstance(args[6], dict) else {})
+            or {}
         )
+        return super().plan_chapter(*args, **kwargs)
 
-    def write_chapter(
-        self,
-        request,
-        brief,
-        plan,
-        protagonist_name,
-        research_notes,
-        character_roster=None,
-        genre_prose_card="",
-        compact_characters=None,
-        previous_chapter_excerpt="",
-    ):
-        self.writer_card = genre_prose_card
-        return super().write_chapter(
-            request,
-            brief,
-            plan,
-            protagonist_name,
-            research_notes,
-            character_roster,
-            genre_prose_card,
-            compact_characters,
-            previous_chapter_excerpt,
-        )
+    def write_chapter(self, *args, **kwargs):
+        self.writer_card = kwargs.get("genre_prose_card") or ""
+        if len(args) > 6 and isinstance(args[6], str):
+            self.writer_card = args[6] or self.writer_card
+        return super().write_chapter(*args, **kwargs)
 
     def deslop_chapter(
         self,

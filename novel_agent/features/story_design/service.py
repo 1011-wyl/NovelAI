@@ -144,7 +144,7 @@ class StoryDesignService:
                 "character_profiles",
             ],
             "world": ["world_rules"],
-            "opening": ["opening_three_chapters"],
+            "opening": ["opening_three_chapters", "opening_chapter_anchors"],
             "style": ["style_guide"],
             "serialization": ["total_chapters", "volume_count", "update_plan"],
         }

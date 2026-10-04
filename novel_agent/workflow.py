@@ -4,6 +4,34 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from novel_agent.features.chapter_planning.context import (
+    build_planning_context,
+    filter_semantic_matches,
+)
+from novel_agent.features.chapter_planning.continuity_guard import (
+    strip_future_fields_from_brief,
+)
+from novel_agent.features.chapter_planning.errors import ReworkModeNotAllowedError
+from novel_agent.features.chapter_planning.models import ReworkMode
+from novel_agent.features.chapter_planning.rework_policy import resolve_requested_mode
+from novel_agent.features.chapter_planning.validation import (
+    assert_write_gate,
+    validate_plan_against_anchor,
+)
+from novel_agent.features.chapter_review.quality_gate import (
+    ChapterQualityGate,
+    merge_review_reports,
+)
+from novel_agent.features.chapter_review.quality_spec import (
+    MAX_REVISION_ATTEMPTS_MAX,
+    MAX_REVISION_ATTEMPTS_MIN,
+    build_reviewer_quality_contract,
+    build_writer_quality_contract,
+    count_quality_chars,
+    length_bounds,
+)
+from novel_agent.features.chapter_review.recovery import ChapterQualityRecovery
+from novel_agent.features.chapter_review.revision_context import ChapterRevisionContext
 from novel_agent.integrations.embedding.disabled import DisabledEmbeddingGateway
 from novel_agent.ports import EmbeddingGateway, LLMGateway, SearchAdapter
 from novel_agent.memory_manager import MemoryManager
@@ -33,10 +61,10 @@ from novel_agent.writing_skills import OhStoryWritingRuntime
 
 
 class WorkflowBlocked(RuntimeError):
-    pass
-
-
-QUALITY_PASS_SCORE = 60.0
+    def __init__(self, message: str, *, code: str = "WORKFLOW_BLOCKED", details: Any = None):
+        super().__init__(message)
+        self.code = code
+        self.details = details
 
 
 @dataclass(slots=True)
@@ -51,6 +79,12 @@ class ChapterWorkflow:
     writing_skills: OhStoryWritingRuntime = field(default_factory=OhStoryWritingRuntime.disabled)
     memory_manager: MemoryManager = field(default_factory=MemoryManager)
     _events: list[RunEvent] = field(default_factory=list, init=False)
+
+    def __post_init__(self) -> None:
+        if not MAX_REVISION_ATTEMPTS_MIN <= self.max_revision_attempts <= MAX_REVISION_ATTEMPTS_MAX:
+            raise ValueError(
+                "MAX_REVISION_ATTEMPTS 必须是 0 到 5 的整数，0 表示审核首稿后不自动修订"
+            )
 
     def run(self, project_id: str) -> WorkflowResult:
         self._events = []
@@ -98,22 +132,18 @@ class ChapterWorkflow:
         try:
             self._emit(run_id, project_id, chapter.id, "LoadContext", "加载最近章节与正式记忆", 5)
             chapters = self.repository.list_chapters(project_id)
-            summaries = [item.summary for item in chapters[-6:] if item.summary]
-            previous_ready = [
-                item
-                for item in chapters
-                if item.number < number
-                and item.status == ChapterStatus.READY
-                and item.content
-            ]
-            previous_chapter_excerpt = (
-                (previous_ready[-1].content or "")[-1800:]
-                if previous_ready
-                else ""
+            planning = build_planning_context(
+                project_id=project_id,
+                chapter_number=number,
+                brief=project.brief,
+                chapters=chapters,
+                timeline_source=self.repository,
             )
-            timeline = self.repository.list_timeline(project_id)
+            summaries = list(planning.recent_summaries)
+            previous_chapter_excerpt = planning.previous_chapter_excerpt
+            timeline = planning.timeline
             character_roster = self.repository.list_characters(project_id)
-            open_threads = [item["event"][:40] for item in timeline[-3:]] or ["异常来源"]
+            open_threads = list(planning.open_threads)
             semantic_research_notes: list[str] = []
             if self.embedding.enabled:
                 self._index_pending(run_id, project_id, chapter.id, progress=8)
@@ -122,12 +152,18 @@ class ChapterWorkflow:
                         [project.brief.main_conflict, *summaries[-2:], *open_threads[-3:]]
                     )
                     vector = self.embedding.embed([query])[0]
-                    matches = self.repository.semantic_search(
-                        project_id, vector, self.semantic_retrieval_limit
+                    matches = filter_semantic_matches(
+                        self.repository.semantic_search(
+                            project_id, vector, self.semantic_retrieval_limit
+                        ),
+                        chapter_number=number,
+                        chapters=chapters,
                     )
                     for match in matches:
                         recalled = str(match["content"])[:1200]
                         if match["source_type"] == "chapter_summary":
+                            if number == 1:
+                                continue
                             if recalled not in summaries:
                                 summaries.append(recalled)
                         else:
@@ -188,8 +224,26 @@ class ChapterWorkflow:
                 if rework_feedback_raw
                 else ""
             )
+            rework_mode_raw = self.repository.get_setting(f"rework_mode:{chapter.id}")
+            latest_report: ReviewReport | None = None
+            with self.repository.connection() as conn:
+                report_row = conn.execute(
+                    """SELECT report_json FROM review_reports
+                    WHERE chapter_id=? ORDER BY created_at DESC LIMIT 1""",
+                    (chapter.id,),
+                ).fetchone()
+            if report_row and report_row["report_json"]:
+                latest_report = ReviewReport.model_validate_json(report_row["report_json"])
+            try:
+                rework_mode = resolve_requested_mode(
+                    str(rework_mode_raw or "auto"),
+                    report=latest_report,
+                    chapter_number=number,
+                    plan=existing.plan if existing else None,
+                )
+            except ReworkModeNotAllowedError as exc:
+                raise WorkflowBlocked(str(exc), code=exc.code) from exc
             if rework_feedback:
-                self.repository.delete_setting(f"rework_feedback:{chapter.id}")
                 writing_guidance = writing_guidance or {}
                 writing_guidance["rework_feedback"] = rework_feedback
                 self._emit(
@@ -210,24 +264,30 @@ class ChapterWorkflow:
                 research_sources=research_sources,
                 current_chapter=number,
             )
-            if existing and existing.plan is not None and rework_feedback:
+            if (
+                existing
+                and existing.plan is not None
+                and rework_mode == ReworkMode.REUSE_PLAN
+            ):
                 plan = existing.plan
                 self._emit(
                     run_id,
                     project_id,
                     chapter.id,
                     "PlanReuse",
-                    "沿用上次细纲，按审稿意见重新写作，避免重复规划消耗",
+                    f"沿用上次细纲（{rework_mode.value}），按审稿意见重新写作",
                     20,
+                    payload={"mode": rework_mode.value},
                 )
             else:
                 self._emit(
                     run_id,
                     project_id,
                     chapter.id,
-                    "Plan",
+                    "PlanRegenerate" if rework_feedback or existing else "Plan",
                     "生成一份包含冲突、选择、代价与情节点预算的章节细纲",
                     15,
+                    payload={"mode": rework_mode.value},
                 )
                 plan = self.gateway.plan_chapter(
                     project.request,
@@ -241,14 +301,33 @@ class ChapterWorkflow:
                     compact_world_facts=compact_ctx.get("compact_world_facts"),
                     compact_timeline=compact_ctx.get("compact_timeline"),
                     previous_chapter_excerpt=previous_chapter_excerpt,
+                    opening_anchor=planning.opening_anchor,
                 )
                 plan = self.writing_skills.normalize_plan(
                     plan,
                     total_chapters=project.brief.total_chapters,
                     target_chars=project.request.chapter_target_chars,
                 )
-            chapter = self.repository.update_chapter(
-                chapter.id, status=ChapterStatus.PLANNED, plan=plan, title=plan.title
+            plan = self._enforce_opening_anchor(
+                plan,
+                project=project,
+                chapter=chapter,
+                run_id=run_id,
+                number=number,
+                planning=planning,
+                character_roster=character_roster,
+            )
+            chapter = self.repository.persist_chapter_plan_and_consume_rework(
+                chapter.id,
+                status=ChapterStatus.PLANNED,
+                plan=plan,
+                title=plan.title,
+            )
+            assert_write_gate(
+                plan,
+                chapter_number=number,
+                context=planning,
+                character_archives=character_roster,
             )
 
             research_notes: list[str] = [
@@ -320,11 +399,24 @@ class ChapterWorkflow:
                 (item for item in character_roster if item.role == "protagonist"),
                 character_roster[0],
             )
+            assert_write_gate(
+                plan,
+                chapter_number=number,
+                context=planning,
+                character_archives=character_roster,
+            )
             if rework_feedback:
                 research_notes = [
                     f"[打回重做修改意见] {rework_feedback}",
                     *research_notes,
                 ]
+            quality_contract = build_writer_quality_contract(
+                chapter_number=number,
+                target_chars=project.request.chapter_target_chars,
+                opening_anchor=planning.opening_anchor,
+                previous_chapter_excerpt=previous_chapter_excerpt,
+                exclude=list(project.request.exclude),
+            )
             content = self.gateway.write_chapter(
                 project.request,
                 project.brief,
@@ -335,6 +427,8 @@ class ChapterWorkflow:
                 writing_guidance.get("genre_prose_card", ""),
                 compact_characters=compact_ctx.get("compact_characters"),
                 previous_chapter_excerpt=previous_chapter_excerpt,
+                opening_anchor=planning.opening_anchor,
+                quality_contract=quality_contract,
             )
             self.repository.save_draft_version(
                 chapter.id,
@@ -367,6 +461,11 @@ class ChapterWorkflow:
                     polished.strip()
                     and after_audit.score >= before_audit.score
                     and after_serious <= before_serious
+                    and (
+                        length_bounds(project.request.chapter_target_chars)["accepted_length_min"]
+                        <= count_quality_chars(polished)
+                        <= length_bounds(project.request.chapter_target_chars)["accepted_length_max"]
+                    )
                 )
                 if accepted_polish:
                     content = polished
@@ -406,181 +505,320 @@ class ChapterWorkflow:
                     },
                 )
 
-            report = ReviewReport(decision=ReviewDecision.REVISE, score=0)
-            # Quality is intentionally a one-shot gate.  A later user click can
-            # retry the same chapter and reuse its saved plan without another
-            # in-run revision loop.
-            for attempt in range(1):
-                chapter = self.repository.update_chapter(chapter.id, status=ChapterStatus.REVIEWING)
-                self._emit(
-                    run_id,
-                    project_id,
-                    chapter.id,
-                    "ParallelReview",
-                    f"执行可读性、一致性、禁用项、篇幅、重复度与文本审核（第 {attempt + 1} 次）",
-                    58 + attempt * 10,
-                )
-                base_report = self._review(
-                    project,
-                    plan,
-                    protagonist.name,
-                    content,
-                    bool(research_notes),
-                )
-                if self.writing_skills.enabled:
-                    prose_audit = self.writing_skills.audit_prose(content)
-                    report = self._merge_review_reports(
-                        base_report,
-                        self.writing_skills.as_review_report(prose_audit),
-                    )
-                else:
-                    report = base_report
-                readability_report = self.gateway.review_readability(
-                    self._readability_context(
-                        project,
-                        plan,
-                        content,
-                        previous_chapter_excerpt,
-                    )
-                )
-                report = self._merge_review_reports(report, readability_report)
-                self._emit(
-                    run_id,
-                    project_id,
-                    chapter.id,
-                    "ReadabilityReview",
-                    (
-                        f"可读性主编审核：{readability_report.decision.value}"
-                    ),
-                    60 + attempt * 10,
-                    level=(
-                        "INFO"
-                        if readability_report.decision == ReviewDecision.PASS
-                        else "WARN"
-                    ),
-                    payload={
-                        "decision": readability_report.decision.value,
-                        "score": readability_report.score,
-                        "checks": readability_report.checks,
-                    },
-                )
-                if self.story_skills.enabled:
-                    skill_report = self.story_skills.audit(
-                        self.repository,
-                        self.gateway,
-                        project,
-                        plan,
-                        content,
-                    )
-                    report = self._merge_review_reports(report, skill_report)
-                    blocker_count = sum(
-                        issue.severity == IssueSeverity.BLOCKER
-                        for issue in skill_report.issues
-                    )
-                    major_count = sum(
-                        issue.severity == IssueSeverity.MAJOR
-                        for issue in skill_report.issues
-                    )
-                    self._emit(
-                        run_id,
-                        project_id,
+            chapter = self.repository.update_chapter(chapter.id, status=ChapterStatus.REVIEWING)
+            reviewer_contract = build_reviewer_quality_contract(
+                chapter_number=number,
+                target_chars=project.request.chapter_target_chars,
+                opening_anchor=planning.opening_anchor,
+                previous_chapter_excerpt=previous_chapter_excerpt,
+                exclude=list(project.request.exclude),
+            )
+            quality_contract = {**quality_contract, **reviewer_contract}
+
+            class _RecoveryHost:
+                def __init__(host_self) -> None:
+                    host_self._plan = plan
+                    host_self._research_notes = research_notes
+
+                def persist_attempt(
+                    host_self,
+                    draft: str,
+                    attempt_report: ReviewReport,
+                    *,
+                    review_attempt: int,
+                    revision_count: int,
+                    recovery_action: str,
+                    preflight_only: bool,
+                ) -> None:
+                    self.repository.save_draft_version(
                         chapter.id,
-                        "StorySkillsAudit",
-                        (
-                            "Story Skills 一致性审校完成："
-                            f"{blocker_count} 个阻断、{major_count} 个主要问题，"
-                            f"得分 {skill_report.score:.0f}"
-                        ),
-                        62 + attempt * 10,
-                        level="WARN" if skill_report.decision != ReviewDecision.PASS else "INFO",
-                        payload={
-                            "skill": "revision-continuity",
-                            "source": self.story_skills.source_commit,
-                            "decision": skill_report.decision.value,
-                            "score": skill_report.score,
+                        draft,
+                        {
+                            "review_attempt": review_attempt,
+                            "revision_count": revision_count,
+                            "recovery_action": recovery_action,
+                            "preflight_only": preflight_only,
+                            "score": attempt_report.score,
+                            "issue_fingerprint": attempt_report.issue_fingerprint,
+                            "score_trace": attempt_report.score_trace,
+                            "report": attempt_report.model_dump(mode="json"),
                         },
                     )
-                # Different reviewers may return a stale REVISE decision even
-                # when their numeric score is above the active pass line.  The
-                # final gate is score-based; only an explicit human blocker can
-                # override it.
-                if (
-                    report.decision != ReviewDecision.HUMAN_REQUIRED
-                    and report.score > QUALITY_PASS_SCORE
-                ):
-                    report = report.model_copy(update={"decision": ReviewDecision.PASS})
-                if report.decision == ReviewDecision.PASS:
-                    break
-                if report.decision == ReviewDecision.HUMAN_REQUIRED:
-                    self.repository.update_chapter(chapter.id, status=ChapterStatus.FAILED)
-                    self.repository.update_project_status(project_id, ProjectStatus.HUMAN_REQUIRED)
-                    self.repository.update_run(
-                        run_id,
-                        RunStatus.HUMAN_REQUIRED.value,
-                        {"node": "ReviewDecision", "report": report.model_dump(mode="json")},
-                        "REVIEW_RETRY_EXHAUSTED",
-                    )
-                    self._emit(
-                        run_id,
-                        project_id,
-                        chapter.id,
-                        "HumanInterrupt",
-                        "自动修订未能安全通过，已保存检查点并进入异常中心",
-                        85,
-                        level="ERROR",
-                    )
-                    raise WorkflowBlocked("章节需要人工处理")
-                if attempt == 0:  # the one-shot gate always stops here when not PASS
-                    chapter = self.repository.update_chapter(
-                        chapter.id, status=ChapterStatus.FAILED
-                    )
-                    feedback = "；".join(
-                        issue.suggestion
-                        for issue in report.issues
-                        if issue.severity in {IssueSeverity.BLOCKER, IssueSeverity.MAJOR}
-                    )[:2000]
-                    if feedback:
-                        self.repository.save_setting(
-                            f"rework_feedback:{chapter.id}", feedback
+                    self.repository.save_review_report(chapter.id, run_id, attempt_report)
+
+                def emit_quality(
+                    host_self,
+                    message: str,
+                    *,
+                    review_attempt: int,
+                    revision_count: int,
+                    report: ReviewReport,
+                    next_action: str,
+                ) -> None:
+                    progress = min(84, 58 + max(0, review_attempt - 1) * 8)
+                    if self.story_skills.enabled:
+                        skill_issues = [
+                            issue
+                            for issue in report.issues
+                            if issue.category.startswith("story")
+                            or "continuity" in issue.category
+                        ]
+                        self._emit(
+                            run_id,
+                            project_id,
+                            chapter.id,
+                            "StorySkillsAudit",
+                            (
+                                "Story Skills 一致性审校完成："
+                                f"{len(skill_issues)} 个问题，得分 {report.score:.0f}"
+                            ),
+                            progress,
+                            level="WARN" if report.decision != ReviewDecision.PASS else "INFO",
+                            payload={
+                                "skill": "revision-continuity",
+                                "source": self.story_skills.source_commit,
+                                "decision": report.decision.value,
+                                "score": report.score,
+                            },
                         )
-                    self.repository.update_run(
+                    self._emit(
                         run_id,
-                        RunStatus.FAILED.value,
-                        {"node": "QualityHold", "report": report.model_dump(mode="json")},
-                        "REVIEW_RETRY_EXHAUSTED",
+                        project_id,
+                        chapter.id,
+                        "ParallelReview",
+                        message,
+                        progress,
+                        level=(
+                            "INFO"
+                            if report.decision == ReviewDecision.PASS
+                            else "WARN"
+                        ),
+                        payload={
+                            "decision": report.decision.value,
+                            "score": report.score,
+                            "checks": report.checks,
+                            "lowest_component": report.lowest_component,
+                            "review_attempt": review_attempt,
+                            "max_review_attempts": report.max_review_attempts,
+                            "revision_count": revision_count,
+                            "next_action": next_action,
+                            "score_trace": report.score_trace,
+                            "blocking_issue_count": report.blocking_issue_count,
+                            "major_issue_count": report.major_issue_count,
+                        },
+                    )
+
+                def write_chapter(host_self, next_plan: ChapterPlan) -> str:
+                    self.repository.update_chapter(
+                        chapter.id, status=ChapterStatus.WRITING, plan=next_plan, title=next_plan.title
                     )
                     self._emit(
                         run_id,
                         project_id,
                         chapter.id,
-                        "QualityHold",
-                        "本次草稿未通过质量门槛；项目保持可用，可再次生成并沿用细纲定向重写",
-                        85,
+                        "Writer",
+                        "按重新规划的细纲重写章节草稿",
+                        70,
+                    )
+                    return self.gateway.write_chapter(
+                        project.request,
+                        project.brief,
+                        next_plan,
+                        protagonist.name,
+                        host_self._research_notes,
+                        character_roster,
+                        writing_guidance.get("genre_prose_card", ""),
+                        compact_characters=compact_ctx.get("compact_characters"),
+                        previous_chapter_excerpt=previous_chapter_excerpt,
+                        opening_anchor=planning.opening_anchor,
+                        quality_contract=quality_contract,
+                    )
+
+                def revise_chapter(host_self, context: ChapterRevisionContext) -> str:
+                    self.repository.update_chapter(chapter.id, status=ChapterStatus.REVISING)
+                    self._emit(
+                        run_id,
+                        project_id,
+                        chapter.id,
+                        "Revision",
+                        f"按审核问题自动修订（第 {context.revision_number} 次）",
+                        72,
+                        payload={
+                            "revision_number": context.revision_number,
+                            "issue_count": len(context.review.issues),
+                        },
+                    )
+                    return self.gateway.revise_chapter(context)
+
+                def replan_chapter(host_self) -> ChapterPlan:
+                    self._emit(
+                        run_id,
+                        project_id,
+                        chapter.id,
+                        "PlanRegenerate",
+                        "结构性问题触发同轮自动重新规划",
+                        66,
                         level="WARN",
                     )
-                    return WorkflowResult(
-                        run_id=run_id,
+                    next_plan = self.gateway.plan_chapter(
+                        project.request,
+                        project.brief,
+                        number,
+                        summaries,
+                        open_threads,
+                        character_roster,
+                        writing_guidance,
+                        compact_characters=compact_ctx.get("compact_characters"),
+                        compact_world_facts=compact_ctx.get("compact_world_facts"),
+                        compact_timeline=compact_ctx.get("compact_timeline"),
+                        previous_chapter_excerpt=previous_chapter_excerpt,
+                        opening_anchor=planning.opening_anchor,
+                    )
+                    next_plan = self.writing_skills.normalize_plan(
+                        next_plan,
+                        total_chapters=project.brief.total_chapters,
+                        target_chars=project.request.chapter_target_chars,
+                    )
+                    next_plan = self._enforce_opening_anchor(
+                        next_plan,
+                        project=project,
                         chapter=chapter,
-                        review=report,
-                        events=self._events,
+                        run_id=run_id,
+                        number=number,
+                        planning=planning,
+                        character_roster=character_roster,
                     )
-                chapter = self.repository.update_chapter(chapter.id, status=ChapterStatus.REVISING)
-                instructions = [
+                    self.repository.update_chapter(
+                        chapter.id,
+                        status=ChapterStatus.PLANNED,
+                        plan=next_plan,
+                        title=next_plan.title,
+                    )
+                    host_self._plan = next_plan
+                    return next_plan
+
+                def build_revision_context(
+                    host_self,
+                    current_plan: ChapterPlan,
+                    draft: str,
+                    attempt_report: ReviewReport,
+                    revision_number: int,
+                    contract: dict[str, Any],
+                ) -> ChapterRevisionContext:
+                    return ChapterRevisionContext(
+                        project_id=project_id,
+                        chapter_number=number,
+                        target_chars=project.request.chapter_target_chars,
+                        creative_request={
+                            "audience_channel": project.request.audience_channel,
+                            "genre": project.request.genre,
+                            "experiences": project.request.experiences,
+                            "elements": project.request.elements,
+                            "protagonist_tags": project.request.protagonist_tags,
+                            "romance": project.request.romance,
+                            "idea": project.request.idea,
+                            "must_have": project.request.must_have,
+                            "nice_to_have": project.request.nice_to_have,
+                            "exclude": project.request.exclude,
+                            "chapter_target_chars": project.request.chapter_target_chars,
+                        },
+                        creative_brief={
+                            "synopsis": project.brief.synopsis,
+                            "style_guide": project.brief.style_guide,
+                            "protagonist_name": project.brief.protagonist_name,
+                            "main_conflict": project.brief.main_conflict,
+                            "world_rules": project.brief.world_rules,
+                        },
+                        chapter_plan=current_plan.model_dump(mode="json"),
+                        quality_contract=contract,
+                        current_draft=draft,
+                        previous_chapter_excerpt=previous_chapter_excerpt[-1800:],
+                        opening_anchor=(
+                            planning.opening_anchor.model_dump(mode="json")
+                            if planning.opening_anchor
+                            else None
+                        ),
+                        character_archives=list(
+                            compact_ctx.get("compact_characters")
+                            or [item.model_dump(mode="json") for item in character_roster]
+                        ),
+                        world_rules=list(project.brief.world_rules),
+                        review=attempt_report,
+                        revision_number=revision_number,
+                    )
+
+            loop = ChapterQualityRecovery(
+                host=_RecoveryHost(),
+                gate=ChapterQualityGate(self.gateway, self.story_skills, self.writing_skills),
+                max_revision_attempts=self.max_revision_attempts,
+            )
+            loop_result = loop.run(
+                repository=self.repository,
+                project=project,
+                plan=plan,
+                content=content,
+                protagonist_name=protagonist.name,
+                previous_chapter_excerpt=previous_chapter_excerpt,
+                has_research=bool(research_notes),
+                characters=character_roster,
+                opening_anchor=planning.opening_anchor,
+                quality_contract=quality_contract,
+            )
+            content = loop_result.content
+            plan = loop_result.plan
+            report = loop_result.report
+
+            if not loop_result.passed:
+                chapter = self.repository.update_chapter(chapter.id, status=ChapterStatus.FAILED)
+                feedback = "；".join(
                     issue.suggestion
-                    if issue.suggestion.startswith("删除禁止项：")
-                    else (
-                        f"[{issue.category}/{issue.severity.value}] {issue.message}；"
-                        f"证据：{' | '.join(issue.evidence) or '见当前正文'}；"
-                        f"修改：{issue.suggestion}"
-                    )
                     for issue in report.issues
-                ]
-                self._emit(run_id, project_id, chapter.id, "Revision", "按审核问题自动修订", 68 + attempt * 10)
-                content = self.gateway.revise_chapter(
-                    content, instructions, project.request.chapter_target_chars
+                    if issue.severity in {IssueSeverity.BLOCKER, IssueSeverity.MAJOR}
+                )[:2000]
+                if feedback:
+                    self.repository.save_setting(f"rework_feedback:{chapter.id}", feedback)
+                self.repository.update_run(
+                    run_id,
+                    RunStatus.FAILED.value,
+                    {
+                        "node": "QualityHold",
+                        "report": report.model_dump(mode="json"),
+                        "score_trace": loop_result.score_trace,
+                        "revision_count": loop_result.revision_count,
+                    },
+                    "REVIEW_RETRY_EXHAUSTED",
                 )
-                self.repository.save_draft_version(
-                    chapter.id, content, {"revision_attempt": attempt + 1, "report": report}
+                if loop_result.selected_score is None:
+                    hold_message = (
+                        f"字数补写 {loop_result.length_repair_count} 次后仍未达标，"
+                        "本轮未进入质量审核。"
+                        "项目保持可用，可重新规划、沿用细纲重写或编辑后重新送审"
+                    )
+                else:
+                    hold_message = (
+                        f"已自动修订 {loop_result.revision_count} 次仍未通过；"
+                        f"保留最佳 {loop_result.selected_score:.1f} 分稿。"
+                        "项目保持可用，可重新规划、沿用细纲重写或编辑后重新送审"
+                    )
+                self._emit(
+                    run_id,
+                    project_id,
+                    chapter.id,
+                    "QualityHold",
+                    hold_message,
+                    85,
+                    level="WARN",
+                    payload={
+                        "score_trace": loop_result.score_trace,
+                        "revision_count": loop_result.revision_count,
+                        "review_attempts": loop_result.review_attempts,
+                    },
+                )
+                return WorkflowResult(
+                    run_id=run_id,
+                    chapter=chapter,
+                    review=report,
+                    events=self._events,
                 )
 
             self._emit(run_id, project_id, chapter.id, "Summary", "生成章节摘要与记忆变更集", 88)
@@ -740,35 +978,75 @@ class ChapterWorkflow:
             previous_chapter_excerpt=previous_chapter_excerpt[-800:],
         )
 
+    def _enforce_opening_anchor(
+        self,
+        plan: ChapterPlan,
+        *,
+        project: ProjectRecord,
+        chapter: ChapterRecord,
+        run_id: str,
+        number: int,
+        planning: Any,
+        character_roster: list[Any],
+    ) -> ChapterPlan:
+        if plan.number != number:
+            plan = plan.model_copy(update={"number": number})
+        issues = validate_plan_against_anchor(
+            plan,
+            chapter_number=number,
+            context=planning,
+            brief=project.brief,
+            character_archives=character_roster,
+        )
+        if not issues:
+            return plan
+        self._emit(
+            run_id,
+            project.id,
+            chapter.id,
+            "PlanAnchorRepair",
+            "细纲未通过开篇锚点校验，尝试一次受限修复",
+            18,
+            level="WARN",
+            payload={"issues": issues},
+        )
+        repaired = self.gateway.repair_chapter_plan(
+            plan,
+            issues,
+            planning.opening_anchor,
+            number,
+            project.brief,
+        )
+        if repaired.number != number:
+            repaired = repaired.model_copy(update={"number": number})
+        issues = validate_plan_against_anchor(
+            repaired,
+            chapter_number=number,
+            context=planning,
+            brief=project.brief,
+            character_archives=character_roster,
+        )
+        if issues:
+            self.repository.update_chapter(chapter.id, status=ChapterStatus.FAILED, plan=plan)
+            self.repository.update_run(
+                run_id,
+                RunStatus.FAILED.value,
+                {"node": "PlanAnchor", "issues": issues, "plan": plan.model_dump(mode="json")},
+                "CHAPTER_PLAN_ANCHOR_MISMATCH",
+            )
+            raise WorkflowBlocked(
+                "章节细纲未能绑定开篇锚点，已停止正文写作",
+                code="CHAPTER_PLAN_ANCHOR_MISMATCH",
+                details=issues,
+            )
+        return repaired
+
     @staticmethod
     def _merge_review_reports(
         base: ReviewReport,
         story_skills: ReviewReport,
     ) -> ReviewReport:
-        issues: list[ReviewIssue] = []
-        seen: set[tuple[str, str]] = set()
-        for issue in [*base.issues, *story_skills.issues]:
-            key = (issue.category, issue.message)
-            if key in seen:
-                continue
-            seen.add(key)
-            issues.append(issue)
-        score = min(base.score, story_skills.score)
-        if ReviewDecision.HUMAN_REQUIRED in {
-            base.decision,
-            story_skills.decision,
-        }:
-            decision = ReviewDecision.HUMAN_REQUIRED
-        elif score > QUALITY_PASS_SCORE:
-            decision = ReviewDecision.PASS
-        else:
-            decision = ReviewDecision.REVISE
-        return ReviewReport(
-            decision=decision,
-            score=score,
-            issues=issues,
-            checks={**base.checks, **story_skills.checks},
-        )
+        return merge_review_reports(base, story_skills)
 
     @staticmethod
     def _merge_character_updates(
@@ -827,61 +1105,9 @@ class ChapterWorkflow:
         content: str,
         has_research: bool,
     ) -> ReviewReport:
-        issues: list[ReviewIssue] = []
-        checks: dict[str, float] = {}
-        target = project.request.chapter_target_chars
-        length_ratio = len(content) / target
-        checks["length"] = min(100.0, round(length_ratio * 100, 1))
-        if length_ratio < 0.9:
-            issues.append(
-                ReviewIssue(
-                    category="text",
-                    severity=IssueSeverity.MAJOR,
-                    message=f"章节长度仅为目标的 {length_ratio:.0%}",
-                    suggestion="补足行动细节、因果与人物反应，不得灌水重复",
-                )
-            )
-        forbidden_terms: list[str] = []
-        for item in project.request.exclude:
-            term = re.sub(r"^(不要|避免|禁止|无)", "", item).strip()
-            if term and term in content:
-                forbidden_terms.append(term)
-                issues.append(
-                    ReviewIssue(
-                        category="constraint",
-                        severity=IssueSeverity.BLOCKER,
-                        message=f"正文出现明确排除项：{term}",
-                        suggestion=f"删除禁止项：{term}",
-                    )
-                )
-        checks["constraints"] = 100.0 if not forbidden_terms else 0.0
-        checks["character"] = 100.0 if protagonist_name in content else 30.0
-        if protagonist_name not in content:
-            issues.append(
-                ReviewIssue(
-                    category="character",
-                    severity=IssueSeverity.MAJOR,
-                    message="主角在正文中缺失",
-                    suggestion=f"围绕{protagonist_name}重写关键场景",
-                )
-            )
-        paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
-        unique_ratio = len(set(paragraphs)) / max(1, len(paragraphs))
-        checks["originality"] = round(unique_ratio * 100, 1)
-        if unique_ratio < 0.8:
-            issues.append(
-                ReviewIssue(
-                    category="repetition",
-                    severity=IssueSeverity.MAJOR,
-                    message="段落重复率过高",
-                    suggestion="重写重复段落并增加推进信息",
-                )
-            )
-        checks["plot"] = 100.0 if plan.hook[:8] in content or "下一" in content else 75.0
-        checks["factuality"] = 100.0 if not plan.research_questions or has_research else 78.0
-        score = round(sum(checks.values()) / len(checks), 1)
-        decision = ReviewDecision.PASS if score > QUALITY_PASS_SCORE else ReviewDecision.REVISE
-        return ReviewReport(decision=decision, score=score, issues=issues, checks=checks)
+        from novel_agent.features.chapter_review.quality_gate import review_structural
+
+        return review_structural(project, plan, protagonist_name, content, has_research)
 
     @staticmethod
     def _summary(plan: ChapterPlan, content: str) -> str:

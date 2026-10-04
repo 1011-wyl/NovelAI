@@ -19,7 +19,7 @@ from novel_agent.config import Settings
 
 
 _OPENAI_COMPATIBLE_LLM_PROVIDERS = frozenset(
-    {"deepseek", "openai-compatible", "dashscope", "qwen"}
+    {"deepseek", "openai-compatible", "dashscope", "qwen", "openai"}
 )
 
 
@@ -46,6 +46,9 @@ def _build_llm_gateway_from_values(
         if provider in {"dashscope", "qwen"}:
             default_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
             default_model = "qwen3.7-plus"
+        elif provider == "openai":
+            default_url = "https://api.openai.com/v1"
+            default_model = "gpt-4o-mini"
         elif provider == "openai-compatible":
             default_url = ""
             default_model = ""

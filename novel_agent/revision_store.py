@@ -132,7 +132,14 @@ class RevisionStoreMixin:
         conn: sqlite3.Connection,
         project_id: str,
         chapter_number: int,
+        action: str | None = None,
     ) -> tuple[sqlite3.Row, sqlite3.Row]:
+        from novel_agent.features.chapter_planning.workspace_capabilities import (
+            WorkspaceAction,
+            capability_denied_reason,
+            workspace_capabilities,
+        )
+        from novel_agent.features.opening_repair.errors import ChapterActionNotAllowedError
         from novel_agent.repository import RepositoryError
 
         project = conn.execute(
@@ -148,10 +155,17 @@ class RevisionStoreMixin:
         ).fetchone()
         if chapter is None:
             raise RepositoryError(f"找不到第{chapter_number}章")
-        if chapter["status"] != ChapterStatus.READY.value:
-            raise ChapterNotEditableError(
-                f"仅 READY 章节可编辑，当前状态为 {chapter['status']}"
-            )
+        resolved = WorkspaceAction(action) if action else WorkspaceAction.COMMIT_REVISION
+        caps = workspace_capabilities(str(chapter["status"]), str(project["status"]))
+        reason = capability_denied_reason(resolved, caps, str(chapter["status"]))
+        if reason:
+            if resolved == WorkspaceAction.COMMIT_REVISION and chapter["status"] == ChapterStatus.FAILED.value:
+                error = ChapterActionNotAllowedError(reason)
+                error.code = "FAILED_DRAFT_REVIEW_REQUIRED"
+                raise error
+            if resolved in {WorkspaceAction.EDIT_DRAFT, WorkspaceAction.ASSISTANT}:
+                raise ChapterNotEditableError(reason)
+            raise ChapterActionNotAllowedError(reason)
         return project, chapter
 
     def _working_copy_on_conn(
@@ -212,7 +226,9 @@ class RevisionStoreMixin:
         content_hash = draft_content_hash(title, content)
         now = utc_now()
         with self.transaction() as conn:  # type: ignore[attr-defined]
-            _, chapter = self._require_editable_chapter(conn, project_id, chapter_number)
+            _, chapter = self._require_editable_chapter(
+                conn, project_id, chapter_number, action="edit_draft"
+            )
             if int(chapter["version"]) != int(update.base_version):
                 raise EditConflictError(
                     f"正式版本已变更：期望 v{update.base_version}，当前 v{chapter['version']}"
@@ -299,7 +315,9 @@ class RevisionStoreMixin:
         now = utc_now()
         session_id = new_id("asession")
         with self.transaction() as conn:  # type: ignore[attr-defined]
-            _, chapter = self._require_editable_chapter(conn, project_id, chapter_number)
+            _, chapter = self._require_editable_chapter(
+                conn, project_id, chapter_number, action="use_assistant"
+            )
             session_title = (title or "").strip() or f"第{chapter_number}章修订会话"
             conn.execute(
                 """INSERT INTO assistant_sessions
@@ -782,7 +800,9 @@ class RevisionStoreMixin:
 
         now = utc_now()
         with self.transaction() as conn:  # type: ignore[attr-defined]
-            _, chapter = self._require_editable_chapter(conn, project_id, chapter_number)
+            _, chapter = self._require_editable_chapter(
+                conn, project_id, chapter_number, action="edit_draft"
+            )
             snap = conn.execute(
                 """SELECT * FROM chapter_versions
                 WHERE chapter_id=? AND version=?""",
@@ -843,13 +863,14 @@ class RevisionStoreMixin:
         analysis: ChapterRevisionAnalysis,
         review: ReviewReport | None,
         base_characters: list[CharacterRecord],
+        action: str = "commit_revision",
     ) -> ChapterRevisionResult:
         from novel_agent.repository import RepositoryError
 
         now = utc_now()
         with self.transaction() as conn:  # type: ignore[attr-defined]
             project, chapter = self._require_editable_chapter(
-                conn, project_id, chapter_number
+                conn, project_id, chapter_number, action=action
             )
             if int(chapter["version"]) != int(expected_base_version):
                 raise EditConflictError(
@@ -1206,4 +1227,26 @@ class RevisionStoreMixin:
             memory_changes=memory_changes,
             warnings=[],
             semantic_index_status="pending",
+        )
+
+    def commit_failed_chapter_review(
+        self,
+        project_id: str,
+        chapter_number: int,
+        *,
+        expected_base_version: int,
+        expected_draft_hash: str,
+        analysis: ChapterRevisionAnalysis,
+        review: ReviewReport | None,
+        base_characters: list[CharacterRecord],
+    ) -> ChapterRevisionResult:
+        return self.commit_chapter_revision(
+            project_id,
+            chapter_number,
+            expected_base_version=expected_base_version,
+            expected_draft_hash=expected_draft_hash,
+            analysis=analysis,
+            review=review,
+            base_characters=base_characters,
+            action="submit_for_review",
         )

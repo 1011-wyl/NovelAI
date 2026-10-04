@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import sqlite3
+from collections import defaultdict
 
 from novel_agent.features.projects.errors import ProjectNotFoundError, ProjectStateError
-from novel_agent.features.projects.models import ProjectRecord, ProjectStatus
+from novel_agent.features.projects.models import ProjectRecord, ProjectStatus, ProjectSummary
 from novel_agent.features.story_design.models import CreativeBrief, NovelCreateRequest
 from novel_agent.infrastructure.persistence.database import DatabaseSessionProvider
 from novel_agent.infrastructure.persistence.json_util import dump_json
 from novel_agent.models import utc_now
+from novel_agent.text_metrics import count_content_chars
 
 
 class SQLiteProjectsStore:
@@ -84,6 +86,50 @@ class SQLiteProjectsStore:
                 "SELECT * FROM projects ORDER BY created_at DESC"
             ).fetchall()
         return [self.project_from_row(row) for row in rows]
+
+    def list_project_summaries(self) -> list[ProjectSummary]:
+        """Aggregate bookshelf rows in one pass (projects + chapter bodies)."""
+        with self._database.connection() as conn:
+            project_rows = conn.execute(
+                """SELECT id,title,status,confirmed,current_chapter,created_at,updated_at,
+                          request_json
+                   FROM projects
+                   ORDER BY updated_at DESC"""
+            ).fetchall()
+            chapter_rows = conn.execute(
+                """SELECT project_id, content FROM chapters
+                   WHERE project_id IN (SELECT id FROM projects)"""
+            ).fetchall()
+
+        chapter_counts: dict[str, int] = defaultdict(int)
+        content_chars: dict[str, int] = defaultdict(int)
+        for row in chapter_rows:
+            project_id = str(row["project_id"])
+            chapter_counts[project_id] += 1
+            content = row["content"]
+            if content:
+                content_chars[project_id] += count_content_chars(content)
+
+        summaries: list[ProjectSummary] = []
+        for row in project_rows:
+            request = NovelCreateRequest.model_validate_json(row["request_json"])
+            project_id = str(row["id"])
+            summaries.append(
+                ProjectSummary(
+                    id=project_id,
+                    title=row["title"],
+                    status=ProjectStatus(row["status"]),
+                    confirmed=bool(row["confirmed"]),
+                    audience_channel=request.audience_channel,
+                    genre=request.genre,
+                    chapter_count=chapter_counts[project_id],
+                    content_chars=content_chars[project_id],
+                    current_chapter=int(row["current_chapter"]),
+                    created_at=row["created_at"],
+                    updated_at=row["updated_at"],
+                )
+            )
+        return summaries
 
     def get_project(self, project_id: str) -> ProjectRecord:
         with self._database.connection() as conn:

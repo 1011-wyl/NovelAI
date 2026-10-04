@@ -1,0 +1,644 @@
+:root {
+  --workspace-bg: #f7f7f5;
+  --workspace-panel: #ffffff;
+  --workspace-text: #1f1f1d;
+  --workspace-muted: #6b6b66;
+  --workspace-border: #e6e6e1;
+  --workspace-accent: #2f6fed;
+  --workspace-danger: #b42318;
+  --workspace-added: #0f7b3b;
+  --workspace-removed: #b42318;
+}
+
+#readerView.writing-workspace {
+  display: none;
+  position: relative;
+  grid-template-columns: 240px minmax(0, 1fr) 360px;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  background: var(--workspace-panel);
+  color: var(--workspace-text);
+  border: 0;
+  border-radius: 0;
+  overflow: hidden;
+  align-items: stretch;
+}
+
+#readerView.writing-workspace.active {
+  display: grid;
+}
+
+#readerView.writing-workspace.active.assistant-closed {
+  grid-template-columns: 240px minmax(0, 1fr);
+}
+
+#readerView.writing-workspace.active.assistant-closed .workspace-assistant {
+  display: none;
+}
+
+#readerView.writing-workspace.active.assistant-closed .ws-assistant-toggle {
+  display: inline-flex;
+}
+
+/* Vue shell full-bleed reader */
+.app-shell.is-full-bleed:has(#readerView.active) {
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+}
+
+.app-shell__content.is-full-bleed:has(#readerView) {
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  padding: 0 !important;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+/* Dialog host must not occupy a grid track (would break column height). */
+#readerView.writing-workspace > #wsDialogHost {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 80;
+}
+
+#readerView.writing-workspace > #wsDialogHost > * {
+  pointer-events: auto;
+}
+
+/* Selection menu is viewport-fixed and must not take a grid cell. */
+#readerView.writing-workspace > #wsSelectionBar {
+  position: fixed;
+  inset: auto;
+  z-index: 90;
+  pointer-events: auto;
+}
+
+/* Full-bleed reader page (OpenFic-like) — lock height chain so footers stick */
+.shell:has(#readerView.active) {
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+}
+
+.shell:has(#readerView.active) > .workspace {
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.workspace > main:has(#readerView.active) {
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  padding: 0 !important;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: auto;
+}
+
+.workspace > main:has(#readerView.active) > .topbar {
+  display: none !important;
+}
+
+.workspace > main:has(#readerView.active) > #flash.hidden {
+  display: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  height: 0 !important;
+  min-height: 0 !important;
+}
+
+.workspace > main:has(#readerView.active) > #flash:not(.hidden) {
+  margin: 8px 14px 0;
+  flex: 0 0 auto;
+}
+
+.workspace > main:has(#readerView.active) > #readerView.active {
+  flex: 1;
+  min-height: 0;
+}
+
+.ws-book-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  min-height: 56px;
+}
+
+.reader-book-picker-host {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reader-book-picker-host .book-picker {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+}
+
+.reader-book-picker-host .book-picker-menu {
+  left: 0;
+  right: auto;
+  width: min(340px, calc(100vw - 80px));
+}
+
+.ws-chapter-count {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--workspace-muted);
+  white-space: nowrap;
+}
+
+.workspace-chapters,
+.workspace-editor,
+.workspace-assistant {
+  background: var(--workspace-panel);
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.workspace-chapters {
+  border-right: 1px solid var(--workspace-border);
+}
+
+.workspace-assistant {
+  border-left: 1px solid var(--workspace-border);
+}
+
+.ws-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--workspace-border);
+  min-height: 52px;
+  flex: 0 0 auto;
+}
+
+.ws-panel-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.ws-chapter-filters {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--workspace-border);
+  flex: 0 0 auto;
+}
+
+.ws-filter {
+  border: 1px solid var(--workspace-border);
+  background: #fff;
+  color: var(--workspace-muted);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ws-filter[aria-pressed="true"] {
+  color: var(--workspace-text);
+  border-color: #c9c9c2;
+  background: #f0f0eb;
+}
+
+.ws-chapter-list {
+  overflow: auto;
+  padding: 8px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.ws-chapter-item {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  padding: 10px 10px;
+  cursor: pointer;
+  display: grid;
+  gap: 4px;
+  color: inherit;
+}
+
+.ws-chapter-item:hover {
+  background: #f3f3ef;
+}
+
+.ws-chapter-item[aria-current="page"] {
+  background: #eef3ff;
+}
+
+.ws-chapter-item .meta {
+  font-size: 12px;
+  color: var(--workspace-muted);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.ws-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--workspace-accent);
+  display: inline-block;
+}
+
+.ws-editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--workspace-border);
+  flex: 0 0 auto;
+}
+
+.ws-editor-toolbar .spacer { flex: 1; }
+
+.ws-status {
+  font-size: 12px;
+  color: var(--workspace-muted);
+  min-height: 1.2em;
+}
+
+.ws-status.error,
+.ws-status.conflict { color: var(--workspace-danger); }
+
+.ws-selection-menu {
+  position: fixed;
+  z-index: 90;
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 148px;
+  max-width: min(280px, calc(100vw - 16px));
+  padding: 6px;
+  border: 1px solid var(--workspace-border);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(20, 20, 18, 0.14);
+}
+
+.ws-selection-menu.visible {
+  display: flex;
+}
+
+.ws-selection-menu-label {
+  font-size: 11px;
+  color: var(--workspace-muted);
+  padding: 4px 8px 6px;
+}
+
+.ws-selection-menu-item {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  border-radius: 7px;
+  padding: 8px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ws-selection-menu-item:hover,
+.ws-selection-menu-item:focus-visible {
+  background: #eef3ff;
+  outline: none;
+}
+
+.ws-editor-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 22px 0;
+  gap: 8px;
+}
+
+#wsTitleInput,
+.ws-title-input {
+  appearance: none;
+  border: 0;
+  outline: none;
+  box-shadow: none;
+  font-size: 22px;
+  font-weight: 650;
+  padding: 4px 0 8px;
+  background: transparent;
+  color: inherit;
+  width: 100%;
+  flex: 0 0 auto;
+}
+
+#wsTitleInput:focus,
+.ws-title-input:focus {
+  outline: none;
+}
+
+#wsContentInput,
+.ws-content-input {
+  appearance: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+  resize: none;
+  border: 0;
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+  color: inherit;
+  font-size: 17px;
+  line-height: 1.8;
+  font-family: "Source Han Serif SC", "Noto Serif SC", "Songti SC", Georgia, serif;
+  padding: 0;
+  overflow: auto;
+}
+
+#wsContentInput:focus,
+.ws-content-input:focus {
+  outline: none;
+}
+
+.ws-editor-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--workspace-muted);
+  padding: 10px 0 12px;
+  flex: 0 0 auto;
+  margin-top: auto;
+  border-top: 1px solid transparent;
+}
+
+.ws-assistant-modes,
+.ws-mode-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.ws-mode {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--workspace-border);
+  background: #fff;
+  color: var(--workspace-text);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.ws-mode:hover:not(:disabled) {
+  background: #f7f8fb;
+  border-color: #d4d7e0;
+}
+
+.ws-mode:focus-visible {
+  outline: 2px solid #c9d7f8;
+  outline-offset: 2px;
+}
+
+.ws-mode[aria-pressed="true"] {
+  background: #eef3ff;
+  border-color: #c9d7f8;
+}
+
+.ws-mode:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ws-msg .ws-mode {
+  margin-top: 8px;
+}
+
+.ws-messages {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ws-messages > .empty {
+  margin: auto 0;
+  color: var(--workspace-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ws-msg {
+  border: 1px solid var(--workspace-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fff;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.ws-msg.user {
+  align-self: flex-start;
+  width: fit-content;
+  max-width: 100%;
+  background: #fff;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.ws-msg .role {
+  font-size: 11px;
+  color: var(--workspace-muted);
+  margin-bottom: 4px;
+}
+
+.ws-change-card {
+  border: 1px solid #d7e2f8;
+  background: #f8faff;
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.ws-diff {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid var(--workspace-border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.ws-diff-line {
+  padding: 2px 8px;
+  white-space: pre-wrap;
+}
+
+.ws-diff-line.added { color: var(--workspace-added); background: #eefaf2; }
+.ws-diff-line.removed { color: var(--workspace-removed); background: #fdf1f0; }
+.ws-diff-line.context { color: var(--workspace-muted); }
+
+.ws-change-actions { display: flex; gap: 8px; }
+
+.ws-composer {
+  border-top: 1px solid var(--workspace-border);
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+  flex: 0 0 auto;
+  margin-top: auto;
+}
+
+.ws-ref-chip {
+  display: none;
+  font-size: 12px;
+  color: var(--workspace-muted);
+  background: #f3f3ef;
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+
+.ws-ref-chip.visible { display: block; }
+
+#wsAssistantInput {
+  width: 100%;
+  min-height: 72px;
+  resize: none;
+  border: 1px solid var(--workspace-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.ws-composer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.ws-version-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--workspace-border);
+}
+
+.ws-version-item > div {
+  display: grid;
+  gap: 4px;
+}
+
+.ws-overlay-toggle { display: none; }
+
+.writing-workspace .primary-button,
+.dialog-panel .primary-button {
+  border: 0;
+  background: var(--workspace-accent);
+  color: #fff;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.writing-workspace .danger-button,
+.dialog-panel .danger-button {
+  border: 0;
+  background: var(--workspace-danger);
+  color: #fff;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.writing-workspace .primary-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+@media (max-width: 1199px) {
+  #readerView.writing-workspace.active {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+  #readerView.writing-workspace .workspace-assistant {
+    display: none;
+  }
+  #readerView.writing-workspace.assistant-open .workspace-assistant {
+    display: flex;
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(400px, 100vw);
+    z-index: 70;
+    box-shadow: -8px 0 24px rgba(0,0,0,.12);
+  }
+  .ws-overlay-toggle { display: inline-flex; }
+}
+
+@media (max-width: 767px) {
+  #readerView.writing-workspace.active {
+    grid-template-columns: 1fr;
+  }
+  #readerView.writing-workspace .workspace-chapters {
+    display: none;
+  }
+  #readerView.writing-workspace.chapters-open .workspace-chapters {
+    display: flex;
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: min(300px, 88vw);
+    z-index: 70;
+    box-shadow: 8px 0 24px rgba(0,0,0,.12);
+  }
+  #wsContentInput { font-size: 16px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #readerView.writing-workspace * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

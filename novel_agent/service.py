@@ -110,7 +110,12 @@ class NovelAgentService(ChapterWorkspaceMixin):
         self.projects.delete(project_id, confirmation_title=confirmation_title)
 
     def rework_chapter(
-        self, project_id: str, chapter_number: int, *, feedback: str = ""
+        self,
+        project_id: str,
+        chapter_number: int,
+        *,
+        feedback: str = "",
+        mode: str = "auto",
     ) -> ProjectRecord:
         project = self.repository.get_project(project_id)
         if project.status == ProjectStatus.DRAFT:
@@ -120,15 +125,35 @@ class NovelAgentService(ChapterWorkspaceMixin):
         existing = self.repository.get_chapter_by_number(project_id, chapter_number)
         if existing is None:
             raise RepositoryError(f"找不到第{chapter_number}章")
+        from novel_agent.features.chapter_planning.rework_policy import resolve_requested_mode
+        from novel_agent.models import ReviewReport
+
+        latest_report = None
+        with self.repository.connection() as conn:
+            report_row = conn.execute(
+                """SELECT report_json FROM review_reports
+                WHERE chapter_id=? ORDER BY created_at DESC LIMIT 1""",
+                (existing.id,),
+            ).fetchone()
+        if report_row and report_row["report_json"]:
+            latest_report = ReviewReport.model_validate_json(report_row["report_json"])
+        resolve_requested_mode(
+            mode or "auto",
+            report=latest_report,
+            chapter_number=chapter_number,
+            plan=existing.plan,
+        )
         base_characters = self._character_records(
             project_id, project.request, project.brief
         )
-        return self.repository.rework_chapter(
+        result = self.repository.rework_chapter(
             project_id,
             chapter_number,
             base_characters=base_characters,
             feedback=feedback,
         )
+        self.repository.save_setting(f"rework_mode:{existing.id}", mode or "auto")
+        return result
 
     def get_usage(self) -> dict[str, Any]:
         if hasattr(self.gateway, "usage_summary"):

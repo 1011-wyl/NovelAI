@@ -13,6 +13,8 @@ from novel_agent.features.analytics.service import AnalyticsService
 from novel_agent.repository import SQLiteRepository
 from novel_agent.service import NovelAgentService
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 class ClientDisconnectHelpersTests(unittest.TestCase):
     def test_detects_common_disconnect_exceptions(self) -> None:
@@ -95,21 +97,21 @@ class ClientDisconnectHttpTests(unittest.TestCase):
 
 
 class AnalyticsAbortSourceTests(unittest.TestCase):
-    def test_abort_bumps_request_id(self) -> None:
-        source = (
-            Path(__file__).resolve().parents[1]
-            / "apps"
-            / "web"
-            / "js"
-            / "features"
-            / "analytics"
-            / "api.js"
+    def test_cancellable_getter_invalidates_inflight_generation(self) -> None:
+        """Vue analytics uses createCancellableGetter; abort must bump generation."""
+        http_client = (REPO_ROOT / "apps" / "web" / "src" / "api" / "http-client.ts").read_text(
+            encoding="utf-8"
+        )
+        analytics_api = (
+            REPO_ROOT / "apps" / "web" / "src" / "features" / "analytics" / "api" / "analytics.api.ts"
         ).read_text(encoding="utf-8")
-        self.assertIn("requestIds[key] += 1", source)
-        abort_block = source.split("function abort(key)", 1)[1].split(
-            "function abortAll", 1
-        )[0]
-        self.assertIn("requestIds[key] += 1", abort_block)
+        self.assertIn("createCancellableGetter", http_client)
+        self.assertIn("generation += 1", http_client)
+        abort_block = http_client.split("abort()", 1)[1].split("async run", 1)[0]
+        self.assertIn("generation += 1", abort_block)
+        self.assertIn("createCancellableGetter", analytics_api)
+        self.assertIn("abortAnalyticsRequests", analytics_api)
+        self.assertIn("writingHeroGetter.abort()", analytics_api)
 
 
 if __name__ == "__main__":

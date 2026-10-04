@@ -60,6 +60,7 @@ from novel_agent.features.story_design.models import (
     CharacterProfile,
     CreativeBrief,
     NovelCreateRequest,
+    OpeningChapterAnchor,
 )
 
 #角色记忆更新
@@ -171,6 +172,27 @@ class ReviewReport(StrictModel):
     score: float = Field(ge=0, le=100)
     issues: list[ReviewIssue] = Field(default_factory=list)
     checks: dict[str, float] = Field(default_factory=dict)
+    blocking_issue_count: int = 0
+    major_issue_count: int = 0
+    minor_issue_count: int = 0
+    lowest_component: str | None = None
+    review_attempt: int = 0
+    max_review_attempts: int = 0
+    revision_count: int = 0
+    length_repair_count: int = 0
+    next_action: str = ""
+    accepted_with_warnings: bool = False
+    score_trace: list[float] = Field(default_factory=list)
+    issue_fingerprint: str = ""
+    preflight_only: bool = False
+    quality_status: str = ""
+    pass_score_exclusive: float = 60.0
+    selected_score: float | None = None
+    best_attempt_index: int = 0
+    actual_length: int = 0
+    target_length: int = 0
+    accepted_length_min: int = 0
+    accepted_length_max: int = 0
 
 
 class ReadabilityContext(StrictModel):
@@ -181,6 +203,7 @@ class ReadabilityContext(StrictModel):
     chapter_plan: dict[str, Any]
     current_draft: str
     previous_chapter_excerpt: str = ""
+    quality_contract: dict[str, Any] = Field(default_factory=dict)
 
 #连续上下文
 class ContinuityContext(StrictModel):
@@ -383,6 +406,12 @@ class AssistantChangeSet(StrictModel):
 
 
 class ChapterRevisionCommitRequest(StrictModel):
+    base_version: int
+    expected_draft_hash: str = Field(min_length=1)
+
+
+class ChapterAcceptWithWarningsRequest(StrictModel):
+    confirm: bool
     base_version: int
     expected_draft_hash: str = Field(min_length=1)
 

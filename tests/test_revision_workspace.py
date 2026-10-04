@@ -84,18 +84,25 @@ class RevisionWorkspaceTests(unittest.TestCase):
                     ),
                 )
 
-    def test_schema_version_is_five(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 5)
+    def test_schema_version_is_six(self) -> None:
+        self.assertEqual(SCHEMA_VERSION, 6)
         with self.repo.connection() as conn:
             rows = {
                 int(row["version"])
                 for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
             }
-            self.assertIn(5, rows)
+            self.assertIn(6, rows)
             columns = {
                 row["name"] for row in conn.execute("PRAGMA table_info(chapter_versions)").fetchall()
             }
             self.assertTrue({"title", "source", "is_official"} <= columns)
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            self.assertIn("project_repair_snapshots", tables)
 
     def test_draft_autosave_does_not_change_official_chapter(self) -> None:
         draft = self.service.save_chapter_edit_draft(

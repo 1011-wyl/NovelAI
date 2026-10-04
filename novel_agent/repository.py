@@ -13,6 +13,7 @@ from novel_agent.features.analytics.models import (
     LLMStatsQuery,
     WritingDashboardQuery,
 )
+from novel_agent.features.chapter_review.quality_spec import count_quality_chars, length_bounds
 from novel_agent.features.projects.errors import ProjectError
 from novel_agent.features.story_design.errors import BriefVersionNotFoundError, StoryDesignError
 from novel_agent.infrastructure.persistence.analytics_store import SQLiteAnalyticsStore
@@ -20,6 +21,9 @@ from novel_agent.infrastructure.persistence.briefs_store import SQLiteBriefsStor
 from novel_agent.infrastructure.persistence.migrations.analytics_v4 import (
     DASHBOARD_MIGRATION_VERSION,
     apply_analytics_v4,
+)
+from novel_agent.infrastructure.persistence.migrations.opening_repair_v6 import (
+    apply_opening_repair_v6,
 )
 from novel_agent.infrastructure.persistence.project_setup_store import (
     SQLiteProjectSetupStore,
@@ -46,7 +50,7 @@ from novel_agent.telemetry import LLMCallRecord
 from novel_agent.text_metrics import count_content_chars
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class RepositoryError(RuntimeError):
@@ -64,6 +68,11 @@ class SQLiteRepository(RevisionStoreMixin):
         self.projects = SQLiteProjectsStore(self)
         self.briefs = SQLiteBriefsStore(self)
         self.project_setup = SQLiteProjectSetupStore(self, self.projects, self.briefs)
+        from novel_agent.infrastructure.persistence.opening_repair_store import (
+            SQLiteOpeningRepairStore,
+        )
+
+        self.opening_repair = SQLiteOpeningRepairStore(self)
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
@@ -398,6 +407,7 @@ class SQLiteRepository(RevisionStoreMixin):
                 """CREATE INDEX IF NOT EXISTS idx_chapter_versions_official
                 ON chapter_versions(chapter_id, is_official, version DESC)"""
             )
+            apply_opening_repair_v6(conn)
 
             conn.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
@@ -442,6 +452,9 @@ class SQLiteRepository(RevisionStoreMixin):
     def list_projects(self) -> list[ProjectRecord]:
         return self.projects.list_projects()
 
+    def list_project_summaries(self):
+        return self.projects.list_project_summaries()
+
     def get_project(self, project_id: str) -> ProjectRecord:
         try:
             return self.projects.get_project(project_id)
@@ -458,6 +471,12 @@ class SQLiteRepository(RevisionStoreMixin):
         try:
             return self.projects.confirm_project(project_id)
         except ProjectError as exc:
+            raise RepositoryError(str(exc)) from exc
+
+    def update_project_metadata(self, project_id: str, title: str):
+        try:
+            return self.project_setup.update_project_metadata(project_id, title)
+        except (ProjectError, StoryDesignError) as exc:
             raise RepositoryError(str(exc)) from exc
 
     def save_draft_brief(
@@ -565,19 +584,7 @@ class SQLiteRepository(RevisionStoreMixin):
                 (project_id, *affected_ids),
             )
             conn.execute(
-                f"DELETE FROM review_reports WHERE chapter_id IN ({placeholders})",
-                affected_ids,
-            )
-            conn.execute(
                 f"DELETE FROM publish_tasks WHERE chapter_id IN ({placeholders})",
-                affected_ids,
-            )
-            conn.execute(
-                f"DELETE FROM runs WHERE project_id=? AND chapter_id IN ({placeholders})",
-                (project_id, *affected_ids),
-            )
-            conn.execute(
-                f"DELETE FROM chapter_versions WHERE chapter_id IN ({placeholders})",
                 affected_ids,
             )
             feedback_keys = [f"rework_feedback:{chapter_id}" for chapter_id in affected_ids]
@@ -762,6 +769,26 @@ class SQLiteRepository(RevisionStoreMixin):
                 raise RepositoryError(f"找不到章节：{chapter_id}")
         return self.get_chapter(chapter_id)
 
+    def persist_chapter_plan_and_consume_rework(
+        self,
+        chapter_id: str,
+        *,
+        status: ChapterStatus,
+        plan: ChapterPlan,
+        title: str,
+    ) -> ChapterRecord:
+        with self.transaction() as conn:
+            updated = conn.execute(
+                """UPDATE chapters SET status=?, plan_json=?, title=?, updated_at=?
+                WHERE id=?""",
+                (status.value, self._dump(plan), title, utc_now(), chapter_id),
+            ).rowcount
+            if not updated:
+                raise RepositoryError(f"找不到章节：{chapter_id}")
+            conn.execute("DELETE FROM settings WHERE key=?", (f"rework_mode:{chapter_id}",))
+            conn.execute("DELETE FROM settings WHERE key=?", (f"rework_feedback:{chapter_id}",))
+        return self.get_chapter(chapter_id)
+
     def save_draft_version(self, chapter_id: str, content: str, metadata: dict[str, Any]) -> int:
         with self.transaction() as conn:
             chapter = conn.execute(
@@ -891,6 +918,25 @@ class SQLiteRepository(RevisionStoreMixin):
                 (chapter_id, run_id, self._dump(review), now),
             )
         return self.get_chapter(chapter_id)
+
+    def save_review_report(self, chapter_id: str, run_id: str | None, report: ReviewReport) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                """INSERT INTO review_reports(chapter_id,run_id,report_json,created_at)
+                VALUES (?,?,?,?)""",
+                (chapter_id, run_id or "review-submit", self._dump(report), utc_now()),
+            )
+
+    def get_latest_review_report(self, chapter_id: str) -> ReviewReport | None:
+        with self.connection() as conn:
+            row = conn.execute(
+                """SELECT report_json FROM review_reports
+                WHERE chapter_id=? ORDER BY created_at DESC LIMIT 1""",
+                (chapter_id,),
+            ).fetchone()
+        if row is None or not row["report_json"]:
+            return None
+        return ReviewReport.model_validate_json(row["report_json"])
 
     def upsert_character_memories(
         self,
@@ -1108,6 +1154,97 @@ class SQLiteRepository(RevisionStoreMixin):
         result = dict(row)
         result["checkpoint"] = json.loads(result.pop("checkpoint_json") or "{}")
         return result
+
+    def list_chapter_failure_diagnostics(self, project_id: str) -> list[dict[str, Any]]:
+        from novel_agent.features.chapter_planning.rework_policy import classify_rework_mode
+        from novel_agent.features.chapter_planning.workspace_capabilities import (
+            compute_accept_with_warnings,
+        )
+        from novel_agent.features.opening_repair.service import eligibility_reasons
+
+        project = self.get_project(project_id)
+        current_length_bounds = length_bounds(project.request.chapter_target_chars)
+        chapters = self.list_chapters(project_id)
+        eligible = not eligibility_reasons(project, chapters)
+        results: list[dict[str, Any]] = []
+        with self.connection() as conn:
+            for chapter in chapters:
+                if chapter.status != ChapterStatus.FAILED:
+                    continue
+                report_row = conn.execute(
+                    """SELECT report_json, created_at FROM review_reports
+                    WHERE chapter_id=? ORDER BY created_at DESC LIMIT 1""",
+                    (chapter.id,),
+                ).fetchone()
+                run_row = conn.execute(
+                    """SELECT error_code, checkpoint_json FROM runs
+                    WHERE chapter_id=? ORDER BY created_at DESC LIMIT 1""",
+                    (chapter.id,),
+                ).fetchone()
+                report = (
+                    ReviewReport.model_validate_json(report_row["report_json"])
+                    if report_row and report_row["report_json"]
+                    else None
+                )
+                checkpoint = json.loads(run_row["checkpoint_json"] or "{}") if run_row else {}
+                mode = classify_rework_mode(report, chapter.number, chapter.plan)
+                draft = self.get_chapter_edit_draft(project_id, chapter.number)
+                content = (draft.content if draft is not None else chapter.content) or ""
+                issues = [
+                    {
+                        "category": issue.category,
+                        "severity": issue.severity.value,
+                        "message": issue.message,
+                    }
+                    for issue in (report.issues[:8] if report else [])
+                ]
+                results.append(
+                    {
+                        "chapter_number": chapter.number,
+                        "error_code": run_row["error_code"] if run_row else None,
+                        "node": checkpoint.get("node"),
+                        "decision": report.decision.value if report else None,
+                        # Preflight failures (for example exhausted length
+                        # repair) never reached the quality reviewer.  The
+                        # persisted report keeps a numeric compatibility
+                        # placeholder, but the public API must not present it
+                        # as a real zero-point review.
+                        "score": (
+                            None
+                            if report and report.preflight_only
+                            else report.score if report else None
+                        ),
+                        "issues": issues,
+                        "reviewed_at": report_row["created_at"] if report_row else None,
+                        "recommended_rework_mode": mode.value,
+                        "opening_repair_eligible": bool(eligible and chapter.number == 1),
+                        "can_accept_with_warnings": compute_accept_with_warnings(report, content),
+                        "lowest_component": report.lowest_component if report else None,
+                        "score_trace": list(report.score_trace) if report else [],
+                        "review_attempt": report.review_attempt if report else 0,
+                        "max_review_attempts": report.max_review_attempts if report else 0,
+                        "revision_count": report.revision_count if report else 0,
+                        "length_repair_count": report.length_repair_count if report else 0,
+                        "blocking_issue_count": report.blocking_issue_count if report else 0,
+                        "major_issue_count": report.major_issue_count if report else 0,
+                        "quality_status": report.quality_status if report else "",
+                        "preflight_only": report.preflight_only if report else False,
+                        "pass_score_exclusive": report.pass_score_exclusive if report else 60.0,
+                        "selected_score": (
+                            None
+                            if report
+                            and report.preflight_only
+                            and report.best_attempt_index <= 0
+                            else report.selected_score if report else None
+                        ),
+                        "best_attempt_index": report.best_attempt_index if report else 0,
+                        "actual_length": count_quality_chars(content) if report else 0,
+                        "target_length": current_length_bounds["target_length"] if report else 0,
+                        "accepted_length_min": current_length_bounds["accepted_length_min"] if report else 0,
+                        "accepted_length_max": current_length_bounds["accepted_length_max"] if report else 0,
+                    }
+                )
+        return results
 
     def recover_protagonist_name_issue(
         self,

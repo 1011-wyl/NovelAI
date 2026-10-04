@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 
 from novel_agent.features.projects.errors import ProjectNotFoundError, ProjectStateError
-from novel_agent.features.projects.models import ProjectRecord, ProjectStatus
+from novel_agent.features.projects.models import ProjectRecord, ProjectStatus, ProjectSummary
+from novel_agent.features.story_design.character_seed import seed_payloads_from_brief
 from novel_agent.features.story_design.models import CreativeBrief, NovelCreateRequest
 from novel_agent.infrastructure.persistence.briefs_store import SQLiteBriefsStore
 from novel_agent.infrastructure.persistence.database import DatabaseSessionProvider
 from novel_agent.infrastructure.persistence.json_util import dump_json
 from novel_agent.infrastructure.persistence.projects_store import SQLiteProjectsStore
 from novel_agent.models import CharacterRecord, WorldFactRecord, new_id, utc_now
+from novel_agent.text_metrics import count_content_chars
 
 
 class SQLiteProjectSetupStore:
@@ -129,6 +130,76 @@ class SQLiteProjectSetupStore:
             self._sync_characters_and_world(conn, project_id, request, brief)
         return self._projects.get_project(project_id)
 
+    def update_project_metadata(self, project_id: str, title: str) -> ProjectSummary:
+        """Rename project without changing status, confirmation, or chapters."""
+        now = utc_now()
+        with self._database.transaction() as conn:
+            row = self._projects.fetch_project_row(conn, project_id)
+            if row is None:
+                raise ProjectNotFoundError(f"找不到小说项目：{project_id}")
+            project = self._projects.project_from_row(row)
+            candidates = [
+                title,
+                *[
+                    candidate
+                    for candidate in project.brief.title_candidates
+                    if candidate != title
+                ],
+            ][:6]
+            brief = project.brief.model_copy(
+                update={
+                    "selected_title": title,
+                    "title_candidates": candidates,
+                }
+            )
+            next_version = self._briefs.next_version(conn, project_id)
+            self._projects.update_title_and_brief(
+                conn,
+                project_id,
+                title=title,
+                brief=brief,
+                updated_at=now,
+            )
+            self._briefs.insert_brief_version(
+                conn,
+                project_id=project_id,
+                version=next_version,
+                brief=brief,
+                source="metadata_edit",
+                feedback=None,
+                created_at=now,
+            )
+            count_row = self._required_row(
+                conn.execute(
+                    "SELECT COUNT(*) AS count FROM chapters WHERE project_id=?",
+                    (project_id,),
+                ).fetchone(),
+                "统计项目章节",
+            )
+            chapter_count = int(count_row["count"])
+            content_rows = conn.execute(
+                "SELECT content FROM chapters WHERE project_id=?",
+                (project_id,),
+            ).fetchall()
+            content_chars = sum(
+                count_content_chars(item["content"])
+                for item in content_rows
+                if item["content"]
+            )
+        return ProjectSummary(
+            id=project.id,
+            title=title,
+            status=project.status,
+            confirmed=project.confirmed,
+            audience_channel=project.request.audience_channel,
+            genre=project.request.genre,
+            chapter_count=chapter_count,
+            content_chars=content_chars,
+            current_chapter=project.current_chapter,
+            created_at=project.created_at,
+            updated_at=now,
+        )
+
     def _sync_characters_and_world(
         self,
         conn: sqlite3.Connection,
@@ -136,85 +207,38 @@ class SQLiteProjectSetupStore:
         request: NovelCreateRequest,
         brief: CreativeBrief,
     ) -> None:
-        character = conn.execute(
-            """SELECT id,current_state_json,version FROM characters
+        seeds = seed_payloads_from_brief(request, brief)
+        protagonist_row = conn.execute(
+            """SELECT id,version FROM characters
             WHERE project_id=? AND role='protagonist' ORDER BY id LIMIT 1""",
             (project_id,),
         ).fetchone()
-        if character is None:
+        if protagonist_row is None:
             raise ProjectStateError("找不到主角人物记录")
-        state = json.loads(character["current_state_json"])
-        state["goal"] = brief.main_conflict
-        protagonist_profile = next(
-            (
-                profile
-                for profile in brief.character_profiles
-                if profile.name == brief.protagonist_name
-            ),
-            None,
-        )
-        if protagonist_profile:
-            state["relationships"] = protagonist_profile.relationships
-        state["importance"] = "core"
-        immutable = [
-            f"主角姓名为{brief.protagonist_name}",
-            *(
-                [f"人物背景：{brief.protagonist_profile}"]
-                if brief.protagonist_profile
-                else []
-            ),
-            f"故事起点属于{request.genre}",
-            "没有未经故事建立的无限资源或全知能力",
-        ]
-        if protagonist_profile and protagonist_profile.personality:
-            immutable.insert(
-                -2,
-                f"性格特征：{'、'.join(protagonist_profile.personality)}",
+        conn.execute("DELETE FROM characters WHERE project_id=?", (project_id,))
+        for profile, facts, state in seeds:
+            is_protagonist = profile.name == brief.protagonist_name
+            character_id = (
+                protagonist_row["id"]
+                if is_protagonist
+                else new_id("character")
             )
-        conn.execute(
-            """UPDATE characters SET name=?,immutable_facts_json=?,current_state_json=?,
-            version=? WHERE id=?""",
-            (
-                brief.protagonist_name,
-                dump_json(immutable),
-                dump_json(state),
-                int(character["version"]) + 1,
-                character["id"],
-            ),
-        )
-        conn.execute(
-            "DELETE FROM characters WHERE project_id=? AND role<>'protagonist'",
-            (project_id,),
-        )
-        for profile in brief.character_profiles:
-            if profile.name == brief.protagonist_name:
-                continue
-            profile_facts = [
-                *([f"人物背景：{profile.profile}"] if profile.profile else []),
-                *(
-                    [f"性格特征：{'、'.join(profile.personality)}"]
-                    if profile.personality
-                    else []
-                ),
-            ]
-            profile_state = {
-                "chapter": 0,
-                "importance": profile.importance,
-                "goal": profile.core_goal,
-                "knowledge": [],
-                "relationships": profile.relationships,
-            }
+            version = int(protagonist_row["version"]) + 1 if is_protagonist else 1
+            role = "protagonist" if is_protagonist else (
+                "supporting" if profile.role == "protagonist" else profile.role
+            )
             conn.execute(
                 """INSERT INTO characters
                 (id,project_id,name,role,immutable_facts_json,current_state_json,version)
-                VALUES (?,?,?,?,?,?,1)""",
+                VALUES (?,?,?,?,?,?,?)""",
                 (
-                    new_id("character"),
+                    character_id,
                     project_id,
                     profile.name,
-                    "supporting" if profile.role == "protagonist" else profile.role,
-                    dump_json(profile_facts),
-                    dump_json(profile_state),
+                    role,
+                    dump_json(facts),
+                    dump_json(state),
+                    version,
                 ),
             )
         conn.execute("DELETE FROM world_facts WHERE project_id=?", (project_id,))

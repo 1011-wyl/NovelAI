@@ -25,13 +25,34 @@ from novel_agent.integrations.llm.errors import (
 from novel_agent.config import Settings
 from novel_agent.features.analytics.errors import AnalyticsValidationError
 from novel_agent.features.analytics.service import AnalyticsService
+from novel_agent.features.chapter_planning.errors import ReworkModeNotAllowedError
+from novel_agent.features.chapter_review.errors import QualityOverrideNotAllowedError
+from novel_agent.features.opening_repair.errors import (
+    ChapterActionNotAllowedError,
+    OpeningRepairError,
+)
+from novel_agent.features.opening_repair.service import OpeningRepairService
 from novel_agent.features.projects.service import ProjectService
 from novel_agent.features.story_design.service import StoryDesignService
+from novel_agent.features.llm_settings.errors import LLMSettingsError
+from novel_agent.features.llm_settings.service import LLMSettingsService
 from novel_agent.interfaces.http.routes.analytics import dispatch_analytics_get
+from novel_agent.interfaces.http.routes.llm_settings import (
+    dispatch_llm_settings_delete,
+    dispatch_llm_settings_get,
+    dispatch_llm_settings_post,
+    dispatch_llm_settings_put,
+    llm_settings_error_result,
+)
+from novel_agent.interfaces.http.routes.opening_repair import (
+    dispatch_opening_repair_get,
+    dispatch_opening_repair_post,
+)
 from novel_agent.interfaces.http.routes.projects import (
     dispatch_projects_delete,
     dispatch_projects_get,
     dispatch_projects_post,
+    dispatch_projects_put,
 )
 from novel_agent.interfaces.http.routes.story_design import (
     dispatch_story_design_get,
@@ -41,6 +62,7 @@ from novel_agent.interfaces.http.routes.story_design import (
 from novel_agent.models import (
     AssistantMessageCreate,
     AssistantRollbackRequest,
+    ChapterAcceptWithWarningsRequest,
     ChapterDraftUpdate,
     ChapterRevisionCommitRequest,
     ChapterStatus,
@@ -106,6 +128,8 @@ class AppContext:
     analytics: AnalyticsService | None = None
     projects: ProjectService | None = None
     story_design: StoryDesignService | None = None
+    opening_repair: OpeningRepairService | None = None
+    llm_settings: LLMSettingsService | None = None
 
     def __post_init__(self) -> None:
         if self.analytics is None:
@@ -114,6 +138,16 @@ class AppContext:
             self.story_design = self.service.story_design
         if self.projects is None:
             self.projects = self.service.projects
+        if self.opening_repair is None:
+            self.opening_repair = OpeningRepairService(
+                self.repository, self.repository.opening_repair
+            )
+
+    def bind_llm_task(self) -> None:
+        gateway = self.service.gateway
+        begin = getattr(gateway, "begin_task", None)
+        if callable(begin):
+            begin()
 
 
 class NovelAgentHandler(BaseHTTPRequestHandler):
@@ -130,6 +164,7 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         try:
+            self.context.bind_llm_task()
             path = urlsplit(self.path).path
             params = self._query_params()
             assert self.context.analytics is not None
@@ -153,6 +188,18 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
             if story_result is not None:
                 self._send_json(story_result.payload, story_result.status)
                 return
+            if self.context.opening_repair is not None:
+                repair_result = dispatch_opening_repair_get(
+                    path, self.context.opening_repair
+                )
+                if repair_result is not None:
+                    self._send_json(repair_result.payload, repair_result.status)
+                    return
+            if self.context.llm_settings is not None:
+                llm_result = dispatch_llm_settings_get(path, self.context.llm_settings)
+                if llm_result is not None:
+                    self._send_json(llm_result.payload, llm_result.status)
+                    return
             if path == "/api/health":
                 self._send_json(
                     {
@@ -246,10 +293,15 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
                 self._send_sse(self.context.repository.list_events(match.group(1)))
                 return
             if path == "/api/settings":
+                prefs = {
+                    key: value
+                    for key, value in self.context.repository.list_settings().items()
+                    if not str(key).startswith("llm.")
+                }
                 self._send_json(
                     {
                         "runtime": self._runtime_readiness(),
-                        "preferences": self.context.repository.list_settings(),
+                        "preferences": prefs,
                     }
                 )
                 return
@@ -272,8 +324,16 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         try:
+            self.context.bind_llm_task()
             path = self.path.split("?", 1)[0]
             payload = self._read_json()
+            if self.context.llm_settings is not None:
+                llm_result = dispatch_llm_settings_post(
+                    path, payload, self.context.llm_settings
+                )
+                if llm_result is not None:
+                    self._send_json(llm_result.payload, llm_result.status)
+                    return
             assert self.context.story_design is not None
             story_result = dispatch_story_design_post(
                 path, payload, self.context.story_design
@@ -288,6 +348,13 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
             if projects_result is not None:
                 self._send_json(projects_result.payload, projects_result.status)
                 return
+            if self.context.opening_repair is not None:
+                repair_result = dispatch_opening_repair_post(
+                    path, payload, self.context.opening_repair
+                )
+                if repair_result is not None:
+                    self._send_json(repair_result.payload, repair_result.status)
+                    return
             match = re.fullmatch(r"/api/novels/([^/]+)/runs", path)
             if match:
                 project_id = match.group(1)
@@ -323,11 +390,32 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
                 project_id = match.group(1)
                 chapter_number = int(match.group(2))
                 feedback = str(payload.get("feedback", "")).strip()[:2000]
+                mode = str(payload.get("mode", "auto")).strip() or "auto"
                 self._send_json(
                     self.context.service.rework_chapter(
-                        project_id, chapter_number, feedback=feedback
+                        project_id, chapter_number, feedback=feedback, mode=mode
                     )
                 )
+                return
+            match = re.fullmatch(
+                r"/api/novels/([^/]+)/chapters/(\d+)/review-submit", path
+            )
+            if match:
+                request = ChapterRevisionCommitRequest.model_validate(payload)
+                payload_out = self.context.service.submit_failed_chapter_review(
+                    match.group(1), int(match.group(2)), request
+                )
+                self._send_json(payload_out, HTTPStatus.OK)
+                return
+            match = re.fullmatch(
+                r"/api/novels/([^/]+)/chapters/(\d+)/accept-with-warnings", path
+            )
+            if match:
+                request = ChapterAcceptWithWarningsRequest.model_validate(payload)
+                payload_out = self.context.service.accept_failed_chapter_with_warnings(
+                    match.group(1), int(match.group(2)), request
+                )
+                self._send_json(payload_out, HTTPStatus.OK)
                 return
             match = re.fullmatch(r"/api/novels/([^/]+)/chapters/(\d+)/revisions", path)
             if match:
@@ -395,8 +483,23 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:
         try:
+            self.context.bind_llm_task()
             path = self.path.split("?", 1)[0]
             payload = self._read_json()
+            if self.context.llm_settings is not None:
+                llm_result = dispatch_llm_settings_put(
+                    path, payload, self.context.llm_settings
+                )
+                if llm_result is not None:
+                    self._send_json(llm_result.payload, llm_result.status)
+                    return
+            assert self.context.projects is not None
+            projects_result = dispatch_projects_put(
+                path, payload, self.context.projects
+            )
+            if projects_result is not None:
+                self._send_json(projects_result.payload, projects_result.status)
+                return
             assert self.context.story_design is not None
             story_result = dispatch_story_design_put(
                 path, payload, self.context.story_design
@@ -421,13 +524,29 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
                 if key not in allowed:
                     raise ValueError(f"设置项不可写：{key}")
                 self.context.repository.save_setting(key, value)
-            self._send_json({"preferences": self.context.repository.list_settings()})
+            prefs = {
+                key: value
+                for key, value in self.context.repository.list_settings().items()
+                if not str(key).startswith("llm.")
+            }
+            self._send_json(
+                {
+                    "preferences": prefs,
+                    "runtime": self._runtime_readiness(),
+                }
+            )
         except Exception as exc:
             self._handle_error(exc)
 
     def do_DELETE(self) -> None:
         try:
+            self.context.bind_llm_task()
             path = self.path.split("?", 1)[0]
+            if self.context.llm_settings is not None:
+                llm_result = dispatch_llm_settings_delete(path, self.context.llm_settings)
+                if llm_result is not None:
+                    self._send_json(llm_result.payload, llm_result.status)
+                    return
             match = re.fullmatch(r"/api/novels/([^/]+)/chapters/(\d+)/edit-draft", path)
             if match:
                 self.context.service.discard_chapter_edit_draft(
@@ -469,6 +588,8 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
 
     def _runtime_readiness(self) -> dict[str, dict[str, object]]:
         runtime = self.context.settings.api_readiness()
+        if self.context.llm_settings is not None:
+            runtime["llm"] = self.context.llm_settings.runtime_card()
         runtime["story_skills"] = self.context.service.story_skills.readiness()
         runtime["oh_story"] = self.context.service.writing_skills.readiness()
         return runtime
@@ -545,8 +666,20 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
                 content_type = "text/javascript; charset=utf-8"
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
-            if target.suffix.lower() in {".js", ".css", ".html"}:
+            if target.name == "index.html":
                 self.send_header("Cache-Control", "no-store, max-age=0")
+            elif "/assets/" in relative.replace("\\", "/") or target.suffix.lower() in {
+                ".js",
+                ".css",
+                ".woff",
+                ".woff2",
+                ".svg",
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".webp",
+            }:
+                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
             self.end_headers()
             self.wfile.write(body)
         except Exception as exc:
@@ -574,9 +707,31 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
             status = HTTPStatus.UNPROCESSABLE_ENTITY
             error = "VALIDATION_ERROR"
             details = exc.errors(include_url=False)
+        elif isinstance(exc, LLMSettingsError):
+            mapped = llm_settings_error_result(exc)
+            status = mapped.status
+            error = exc.code
+            message = exc.message
+            details = None
         elif isinstance(exc, ChapterNotEditableError):
             status = HTTPStatus.CONFLICT
             error = "CHAPTER_NOT_EDITABLE"
+        elif isinstance(exc, ChapterActionNotAllowedError):
+            status = HTTPStatus.CONFLICT
+            error = getattr(exc, "code", None) or "CHAPTER_ACTION_NOT_ALLOWED"
+            details = getattr(exc, "details", None)
+        elif isinstance(exc, QualityOverrideNotAllowedError):
+            status = HTTPStatus.CONFLICT
+            error = exc.code
+            details = getattr(exc, "details", None)
+        elif isinstance(exc, OpeningRepairError):
+            status = getattr(exc, "status", HTTPStatus.CONFLICT)
+            error = getattr(exc, "code", None) or "OPENING_REPAIR_NOT_ELIGIBLE"
+            details = getattr(exc, "details", None)
+        elif isinstance(exc, ReworkModeNotAllowedError):
+            status = HTTPStatus.CONFLICT
+            error = exc.code
+            details = getattr(exc, "details", None)
         elif isinstance(exc, EditConflictError):
             status = HTTPStatus.CONFLICT
             error = "EDIT_CONFLICT"
@@ -612,13 +767,14 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
             error = "BAD_REQUEST"
         elif isinstance(exc, WorkflowBlocked):
             status = HTTPStatus.CONFLICT
-            error = "WORKFLOW_BLOCKED"
+            error = getattr(exc, "code", None) or "WORKFLOW_BLOCKED"
+            details = getattr(exc, "details", None)
         elif isinstance(exc, (ValueError, json.JSONDecodeError)):
             status = HTTPStatus.BAD_REQUEST
             error = "BAD_REQUEST"
         elif isinstance(exc, APIConfigurationRequired):
             status = HTTPStatus.SERVICE_UNAVAILABLE
-            error = "API_NOT_CONFIGURED"
+            error = "LLM_NOT_CONFIGURED" if "尚未配置" in str(exc) else "API_NOT_CONFIGURED"
         elif isinstance(exc, LLMAuthenticationError):
             status = HTTPStatus.BAD_GATEWAY
             error = "LLM_AUTH_ERROR"
@@ -645,10 +801,21 @@ class NovelAgentHandler(BaseHTTPRequestHandler):
 
 
 def serve(context: AppContext) -> None:
+    index = context.web_root / "index.html"
+    if not index.is_file():
+        raise SystemExit(
+            "前端构建产物缺失：找不到 apps/web/dist/index.html。\n"
+            "请先执行：\n"
+            "  cd apps/web\n"
+            "  npm ci\n"
+            "  npm run build\n"
+            "然后再运行 python -m novel_agent serve"
+        )
     handler = type("ConfiguredNovelAgentHandler", (NovelAgentHandler,), {"context": context})
     server = ThreadingHTTPServer((context.settings.host, context.settings.port), handler)
     print(f"Novel Agent 已启动：http://{context.settings.host}:{context.settings.port}")
     print(f"运行模式：{context.settings.mode}；模型适配器：{context.service.gateway.name}")
+    print(f"静态站点：{context.web_root}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

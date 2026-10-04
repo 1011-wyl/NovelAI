@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from novel_agent.features.chapter_review.decision import decide_quality
 from novel_agent.models import (
     ChapterPlan,
     ChapterStatus,
@@ -163,13 +164,17 @@ class StorySkillsRuntime:
             }
             for item in previous
         ]
+        from novel_agent.features.chapter_planning.continuity_guard import (
+            strip_future_fields_from_brief,
+        )
+
         return ContinuityContext(
             skill_name="revision-continuity",
             skill_source=f"{STORY_SKILLS_REPOSITORY}@{self.source_commit}",
             project_id=project.id,
             chapter_number=plan.number,
             creative_request=project.request.model_dump(mode="json"),
-            creative_brief=project.brief.model_dump(mode="json"),
+            creative_brief=strip_future_fields_from_brief(project.brief),
             chapter_plan=plan.model_dump(mode="json"),
             current_draft=content,
             recent_chapters=recent_chapters,
@@ -292,12 +297,9 @@ class StorySkillsRuntime:
             100.0 - blocker_count * 40 - major_count * 18 - minor_count * 3,
         )
         score = min(float(semantic.score), deterministic_score)
-        if semantic.decision == ReviewDecision.HUMAN_REQUIRED:
-            decision = ReviewDecision.HUMAN_REQUIRED
-        elif blocker_count or major_count or score < 85:
-            decision = ReviewDecision.REVISE
-        else:
-            decision = ReviewDecision.PASS
+        # Story Skills contributes evidence and a score; it does not own a
+        # second pass line or severity veto.
+        decision = decide_quality(score)
         checks = {
             "story_skills_deterministic": deterministic_score,
             "story_skills_semantic": float(semantic.score),

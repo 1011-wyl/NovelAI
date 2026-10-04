@@ -1,5 +1,7 @@
 # NovelAI“阅读与修订工作台”前后端实施文档（Cursor 执行版）
 
+> **前端实现位置更新（2026-10-02）**：阅读工作台已迁入 Vue，代码在 `apps/web/src/features/reader/`。请勿再修改已删除的 `apps/web/reader-workspace.js`。总体入口与书架流程以 [`docs/NOVEL_LIBRARY_VUE3_CURSOR_EXECUTION.md`](NOVEL_LIBRARY_VUE3_CURSOR_EXECUTION.md) 为准。
+
 > 文档用途：直接交给 Cursor 按阶段实现  
 > 实施范围：阅读与修订工作台 MVP，不包含作品库、故事种子和故事分支  
 > 产品依据：`docs/NOVELAI_CREATION_CLOSED_LOOP_PRODUCT_PLAN.md`  

@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import random
 
+from novel_agent.features.chapter_review.quality_spec import READABILITY_DIMENSIONS, count_quality_chars
+from novel_agent.features.chapter_review.revision_context import ChapterRevisionContext
 from novel_agent.models import (
     AssistantEditProposal,
     AssistantGatewayResponse,
@@ -20,11 +22,14 @@ from novel_agent.models import (
     ContinuityContext,
     CreativeBrief,
     NovelCreateRequest,
+    OpeningChapterAnchor,
     PlanCandidateEvaluation,
     ProjectRecord,
     ReadabilityContext,
     ReviewDecision,
+    ReviewIssue,
     ReviewReport,
+    IssueSeverity,
     WorldFactRecord,
 )
 
@@ -108,14 +113,24 @@ class OfflineLLMGateway:
                     profile="在秩序变化中承担核心选择的人物，行动谨慎且重视事实依据。",
                     personality=["冷静", "有责任感"],
                     core_goal=f"在{request.genre}环境中建立可持续的生存秩序",
+                    stable_facts=[f"姓名为{protagonist}", "没有无限资源或全知能力"],
+                    initial_state=f"普通人，刚被卷入{request.genre}变局",
+                    initial_goal=f"先活下来并确认{request.idea[:40]}是否可执行",
+                    first_appearance_chapter=1,
+                    future_arc="中后期才可能成为秩序构建者，开篇并未掌控任何城池",
                 ),
                 CharacterProfile(
                     name=ally_name,
                     role="ally",
-                    profile="主角早期结识的行动伙伴，擅长把争论转化为可验证任务。",
+                    profile="尚未与主角形成效忠关系的独立行动者。",
                     personality=["务实", "独立判断"],
                     core_goal="保护同伴，同时确认主角的方案是否值得信任",
-                    relationships={protagonist: "谨慎合作"},
+                    initial_state="与主角尚无主从关系，仅可能短暂同行",
+                    initial_goal="确认眼前危机是否值得介入",
+                    initial_relationships={},
+                    future_arc="被救后才可能成为代理人，开篇不得写成已经效忠",
+                    future_relationships={protagonist: "后来才可能成为谨慎合作的伙伴"},
+                    first_appearance_chapter=1,
                 ),
                 CharacterProfile(
                     name=rival_name,
@@ -123,17 +138,41 @@ class OfflineLLMGateway:
                     profile="与主角争夺关键资源和话语权的竞争者，有自己的现实利益。",
                     personality=["强势", "善于试探"],
                     core_goal="扩大自身控制力并获得稀缺资源",
-                    relationships={protagonist: "利益冲突"},
+                    initial_state="与主角互不相识或仅有利益试探",
+                    initial_relationships={},
+                    future_relationships={protagonist: "利益冲突可能升级"},
+                    first_appearance_chapter=2,
                 ),
             ],
             main_conflict=f"在{request.genre}环境中，把个人生存优势转化为可持续共同体秩序",
             world_rules=rules,
             total_chapters=max(120, request.reserve_target * 20),
             volume_count=6,
-            opening_three_chapters=[
-                "异常征兆出现，主角用职业经验抢到第一项关键先机",
-                "旧秩序失效，主角为一个具体选择付出代价并建立最初同盟",
-                "临时安全点遭遇第一次系统性危机，主线谜团露出证据",
+            opening_chapter_anchors=[
+                OpeningChapterAnchor(
+                    number=1,
+                    title="异常征兆",
+                    core_event="异常征兆出现，主角用职业经验抢到第一项关键先机",
+                    must_establish=["主角当前处境", "能力或资源起点", "即时目标"],
+                    forbidden_assumptions=["已经建立稳固同盟", "已经掌控地方秩序"],
+                    ending_direction="留下必须立刻处理的具体问题",
+                ),
+                OpeningChapterAnchor(
+                    number=2,
+                    title="选择代价",
+                    core_event="旧秩序失效，主角为一个具体选择付出代价并建立最初同盟",
+                    must_establish=["第一次真正的选择与代价"],
+                    forbidden_assumptions=["同盟已经无条件效忠"],
+                    ending_direction="同盟仍不稳定",
+                ),
+                OpeningChapterAnchor(
+                    number=3,
+                    title="系统危机",
+                    core_event="临时安全点遭遇第一次系统性危机，主线谜团露出证据",
+                    must_establish=["更大阻力的可见证据"],
+                    forbidden_assumptions=["最终真相已经揭开"],
+                    ending_direction="主线谜团只露出一角",
+                ),
             ],
             update_plan=(
                 f"每天目标 {request.daily_chapters} 章；单章约 {request.chapter_target_chars} 字；"
@@ -170,16 +209,23 @@ class OfflineLLMGateway:
         compact_world_facts: list[str] | None = None,
         compact_timeline: list[str] | None = None,
         previous_chapter_excerpt: str = "",
+        opening_anchor=None,
     ) -> ChapterPlan:
         arc = (chapter_number - 1) // 10 + 1
         step = (chapter_number - 1) % 10 + 1
         element = request.elements[(chapter_number - 1) % len(request.elements)] if request.elements else "生存"
-        prior = recent_summaries[-1] if recent_summaries else "异常刚刚显现"
+        prior = recent_summaries[-1] if recent_summaries else ""
         objective = f"推进第{arc}阶段目标，并把“{element}”转化为一次可验证的成果"
-        if chapter_number <= 3:
+        if opening_anchor is not None:
+            objective = opening_anchor.core_event
+        elif chapter_number <= 3 and brief.opening_three_chapters:
             objective = brief.opening_three_chapters[chapter_number - 1]
-        thread = open_threads[0] if open_threads else "异常来源"
-        title = f"第{chapter_number}章 {element}的第{step}步"
+        thread = open_threads[0] if open_threads else ""
+        title = (
+            opening_anchor.title
+            if opening_anchor is not None and opening_anchor.title
+            else f"第{chapter_number}章 {element}的第{step}步"
+        )
         research_questions = []
         risky_terms = ("医疗", "药", "枪", "法律", "化学", "电力", "农业", "天气", "地图")
         if any(term in request.idea + "".join(request.elements) for term in risky_terms):
@@ -207,20 +253,36 @@ class OfflineLLMGateway:
                     relationship_changes={brief.protagonist_name: "共同经历本章危机"},
                 )
             )
-        return ChapterPlan(
+        turning = (
+            f"从已发生事件中发现“{prior[:28]}”并非偶然"
+            if prior
+            else f"围绕{element}的第一次行动出现可见阻力"
+        )
+        hook = f"一条新记录把下一步行动指向{thread}" if thread else "阶段成果落地后出现新的未解问题"
+        opening_hook = (
+            "异常记录出现新的现实后果"
+            if chapter_number > 1
+            else "主角在当前处境中被迫立刻行动"
+        )
+        scenes = [
+            (
+                "明确本章可衡量的行动目标"
+                if chapter_number == 1
+                else "承接上章结果，明确本章可衡量的行动目标"
+            ),
+            f"围绕{element}展开侦察、分工与风险判断",
+            "计划遭遇现实阻力，人物立场在压力中分化",
+            "主角用已有知识完成有限反制并承担代价",
+            "阶段成果落地，同时抛出更大的因果问题",
+        ]
+        plan = ChapterPlan(
             number=chapter_number,
             title=title,
             objective=objective,
             conflict=f"有限资源、时间压力与他人对{element}方案的不信任同时出现",
-            turning_point=f"从上一阶段信息中发现“{prior[:28]}”并非偶然，线索指向{thread}",
-            hook=f"一条本不该出现的记录，把下一步行动指向{thread}",
-            scenes=[
-                "承接上章结果，明确本章可衡量的行动目标",
-                f"围绕{element}展开侦察、分工与风险判断",
-                "计划遭遇现实阻力，人物立场在压力中分化",
-                "主角用已有知识完成有限反制并承担代价",
-                "阶段成果落地，同时抛出更大的因果问题",
-            ],
+            turning_point=turning,
+            hook=hook,
+            scenes=scenes,
             research_questions=research_questions,
             character_updates=character_updates,
             story_stage="开篇期" if chapter_number <= max(3, brief.total_chapters * 0.15) else "发展期",
@@ -231,15 +293,27 @@ class OfflineLLMGateway:
             new_expectation=f"{thread}背后的原因将如何改变下一步行动",
             protagonist_goal=objective,
             critical_choice="在保留撤退路线的前提下承担有限代价，验证关键方案",
-            opening_hook="上一阶段留下的异常记录出现新的现实后果",
-            forbidden_releases=["异常来源的最终真相", "无代价解决全部资源问题"],
-            plotline_progress={"主线": objective, "谜团线": f"获得关于{thread}的新证据"},
+            opening_hook=opening_hook,
+            forbidden_releases=["尚未发生的最终真相", "无代价解决全部资源问题"],
+            plotline_progress={"主线": objective, "谜团线": f"获得关于{thread or element}的新证据"},
             relationship_changes=(
                 {supporting.name: "从谨慎合作转为愿意共同承担一次风险"}
                 if supporting else {}
             ),
             information_gap=[f"主角知道记录异常，其他人只看见{element}行动的结果"],
         )
+        self._plan_calls = getattr(self, "_plan_calls", 0) + 1
+        # Long-lived e2e servers accumulate _plan_calls across novels; gate the
+        # structural fix on a review-failure flag instead of a global counter.
+        pending_idea = getattr(self, "_e2e_auto_replan_pending_idea", None)
+        if (
+            "__E2E_AUTO_REPLAN__" in request.idea
+            and pending_idea
+            and pending_idea in request.idea
+        ):
+            self._e2e_auto_replan_pending_idea = None
+            plan = plan.model_copy(update={"objective": f"{plan.objective} 【结构修复】"})
+        return plan
 
     def plan_chapter_candidates(
         self,
@@ -254,6 +328,7 @@ class OfflineLLMGateway:
         compact_world_facts: list[str] | None = None,
         compact_timeline: list[str] | None = None,
         previous_chapter_excerpt: str = "",
+        opening_anchor=None,
     ) -> ChapterPlanBatch:
         base = self.plan_chapter(
             request,
@@ -266,6 +341,8 @@ class OfflineLLMGateway:
             compact_characters,
             compact_world_facts,
             compact_timeline,
+            previous_chapter_excerpt,
+            opening_anchor,
         )
         pressure = base.model_copy(
             update={
@@ -323,6 +400,32 @@ class OfflineLLMGateway:
             evaluations=evaluations,
         )
 
+    def repair_chapter_plan(
+        self,
+        plan: ChapterPlan,
+        issues: list[str],
+        opening_anchor,
+        chapter_number: int,
+        brief: CreativeBrief,
+    ) -> ChapterPlan:
+        updates: dict[str, object] = {"number": chapter_number}
+        if opening_anchor is not None:
+            if opening_anchor.title:
+                updates["title"] = opening_anchor.title
+            updates["objective"] = opening_anchor.core_event
+            updates["protagonist_goal"] = opening_anchor.core_event
+        blob = " ".join(str(item) for item in [plan.opening_hook, *plan.scenes])
+        if chapter_number == 1:
+            scenes = [
+                str(scene).replace("承接上一章结尾", "从当前现场直接起笔").replace("承接上章结果", "明确本章目标")
+                for scene in plan.scenes
+            ]
+            updates["scenes"] = scenes
+            updates["opening_hook"] = "主角在当前处境中被迫立刻行动"
+        if issues:
+            updates["hook"] = opening_anchor.core_event if opening_anchor is not None else plan.hook
+        return plan.model_copy(update=updates)
+
     def write_chapter(
         self,
         request: NovelCreateRequest,
@@ -334,6 +437,8 @@ class OfflineLLMGateway:
         genre_prose_card: str = "",
         compact_characters: list[str] | None = None,
         previous_chapter_excerpt: str = "",
+        opening_anchor=None,
+        quality_contract=None,
     ) -> str:
         seed = int(hashlib.sha256(f"{brief.selected_title}:{plan.number}".encode()).hexdigest()[:8], 16)
         rng = random.Random(seed)
@@ -344,8 +449,13 @@ class OfflineLLMGateway:
             update.name for update in plan.character_updates if update.name != protagonist_name
         ]
         companion = supporting_names[0] if supporting_names else "同行者"
+        chapter_heading = (
+            plan.title
+            if plan.title.lstrip().startswith(f"第{plan.number}章")
+            else f"第{plan.number}章 {plan.title}"
+        )
         paragraphs: list[str] = [
-            plan.title,
+            chapter_heading,
             (
                 f"{rng.choice(sounds)}把天色切成几段。{protagonist_name}站在{rng.choice(locations)}，"
                 f"没有急着下结论。他先看了一眼昨夜留下的标记，再把今天唯一必须完成的事写在纸上："
@@ -397,7 +507,7 @@ class OfflineLLMGateway:
         )
         content = "\n\n".join(paragraphs)
         cycle = 1
-        while len(content) < request.chapter_target_chars:
+        while count_quality_chars(content) < request.chapter_target_chars:
             detail = (
                 f"补充记录{cycle}：{protagonist_name}把本轮行动拆成输入、消耗、结果和待验证项。"
                 f"第{plan.number}章形成的成果只能解决眼前问题，不能越过既定世界规则。"
@@ -464,29 +574,140 @@ class OfflineLLMGateway:
 
     def review_readability(self, context: ReadabilityContext) -> ReviewReport:
         """Offline mode keeps the quality-review node deterministic and side-effect free."""
-        dimensions = {
-            "opening_hook": 90.0,
-            "scene_causality": 90.0,
-            "conflict_escalation": 90.0,
-            "character_agency": 90.0,
-            "dialogue_voice": 90.0,
-            "showing_specificity": 90.0,
-            "reader_payoff": 90.0,
-            "ending_hook": 90.0,
-        }
+        dimensions = {key: 90.0 for key in READABILITY_DIMENSIONS}
+        idea = str((context.creative_request or {}).get("idea") or "")
+        draft = context.current_draft or ""
+        plan_blob = str((context.chapter_plan or {}).get("objective") or "")
+        if "__E2E_HARD_FAIL__" in idea:
+            return ReviewReport(
+                decision=ReviewDecision.REVISE,
+                score=35,
+                issues=[
+                    ReviewIssue(
+                        category="opening",
+                        severity=IssueSeverity.BLOCKER,
+                        message="第一章错误承接不存在的前文",
+                        suggestion="删除前情并重写开篇现场",
+                        evidence=["承接上一章"],
+                    )
+                ],
+                checks={key: 35.0 for key in READABILITY_DIMENSIONS},
+            )
+        if "__E2E_SOFT_FAIL__" in idea:
+            return ReviewReport(
+                decision=ReviewDecision.REVISE,
+                score=58,
+                issues=[
+                    ReviewIssue(
+                        category="readability.opening_hook",
+                        severity=IssueSeverity.MAJOR,
+                        message="开篇钩子偏弱",
+                        suggestion="用正在发生的具体问题重写开篇",
+                        evidence=["维度 opening_hook 得分 58，写作目标 85"],
+                    )
+                ],
+                checks={key: 58.0 for key in READABILITY_DIMENSIONS},
+            )
+        if "__E2E_AUTO_REPLAN__" in idea and "【结构修复】" not in plan_blob:
+            self._e2e_auto_replan_pending_idea = "__E2E_AUTO_REPLAN__"
+            return ReviewReport(
+                decision=ReviewDecision.REVISE,
+                score=40,
+                issues=[
+                    ReviewIssue(
+                        category="opening",
+                        severity=IssueSeverity.MAJOR,
+                        message="章节核心目标与 opening anchor 不一致",
+                        suggestion="重新规划细纲并绑定开篇锚点",
+                        evidence=["plan.objective 未绑定锚点"],
+                    )
+                ],
+                checks={key: 40.0 for key in READABILITY_DIMENSIONS},
+            )
+        if "__E2E_AUTO_REVISE_EXHAUST__" in idea:
+            round_no = draft.count("【自动修订") + 1
+            score = 48.0 + (round_no - 1) * 2
+            return ReviewReport(
+                decision=ReviewDecision.REVISE,
+                score=score,
+                issues=[
+                    ReviewIssue(
+                        category="readability.scene_causality",
+                        severity=IssueSeverity.MAJOR,
+                        message=f"场景因果仍不清晰（第{round_no}轮）",
+                        suggestion="让上一场选择直接造成下一场阻力",
+                        evidence=[f"维度 scene_causality 得分 {score:.0f}，写作目标 85"],
+                    )
+                ],
+                checks={key: score for key in READABILITY_DIMENSIONS},
+            )
+        if "__E2E_AUTO_REVISE_TWICE__" in idea:
+            revised = draft.count("【自动修订")
+            if revised < 2:
+                score = 52.0 + revised * 8
+                return ReviewReport(
+                    decision=ReviewDecision.REVISE,
+                    score=score,
+                    issues=[
+                        ReviewIssue(
+                            category="readability.conflict_escalation",
+                            severity=IssueSeverity.MAJOR,
+                            message=f"冲突升级仍不足（已修订{revised}次）",
+                            suggestion="补足行动细节后再审",
+                            evidence=[f"need two revisions; round={revised}"],
+                        )
+                    ],
+                    checks={key: score for key in READABILITY_DIMENSIONS},
+                )
+        if "__E2E_AUTO_REVISE_ONCE__" in idea and "【自动修订1】" not in draft:
+            return ReviewReport(
+                decision=ReviewDecision.REVISE,
+                score=58,
+                issues=[
+                    ReviewIssue(
+                        category="readability.opening_hook",
+                        severity=IssueSeverity.MAJOR,
+                        message="开篇钩子偏弱",
+                        suggestion="用正在发生的具体问题重写开篇",
+                        evidence=["维度 opening_hook 得分 58，写作目标 85"],
+                    )
+                ],
+                checks={key: 58.0 for key in READABILITY_DIMENSIONS},
+            )
+        if "__E2E_FAIL_REVIEW__" in idea and "【送审修正】" not in draft:
+            return ReviewReport(
+                decision=ReviewDecision.REVISE,
+                score=40,
+                issues=[
+                    ReviewIssue(
+                        category="length",
+                        severity=IssueSeverity.MAJOR,
+                        message="字数和可读性未达到门槛",
+                        suggestion="补足具体场景后再送审",
+                        evidence=["e2e fail review"],
+                    )
+                ],
+                checks={key: 40.0 for key in READABILITY_DIMENSIONS},
+            )
         return ReviewReport(
             decision=ReviewDecision.PASS,
             score=90,
             checks=dimensions,
         )
 
-    def revise_chapter(self, content: str, instructions: list[str], target_chars: int) -> str:
-        revised = content
-        for instruction in instructions:
-            if instruction.startswith("删除禁止项："):
-                term = instruction.split("：", 1)[1]
+    def revise_chapter(self, context: ChapterRevisionContext) -> str:
+        revised = context.current_draft
+        idea = str(context.creative_request.get("idea") or "")
+        for issue in context.review.issues:
+            if issue.suggestion.startswith("删除禁止项："):
+                term = issue.suggestion.split("：", 1)[1]
                 revised = revised.replace(term, "[已按创作约束修订]")
-        while len(revised) < target_chars:
+        if context.quality_contract.get("length_repair"):
+            gap = int(context.quality_contract.get("length_gap_chars") or 80)
+            revised += "定向补写" * max(20, gap)
+        if any(flag in idea for flag in ("__E2E_AUTO_REVISE_ONCE__", "__E2E_AUTO_REVISE_TWICE__", "__E2E_AUTO_REVISE_EXHAUST__", "__E2E_SOFT_FAIL__")):
+            revised += f"\n\n【自动修订{context.revision_number}】"
+        while len(revised) < context.target_chars:
             revised += (
                 "\n\n修订补记：人物重新核对了行动依据、时间顺序和资源余量。"
                 "新增信息被标明来源，尚未确认的判断没有写入正式结论。"

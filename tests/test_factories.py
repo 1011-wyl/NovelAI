@@ -114,6 +114,15 @@ class FactoryMatrixTests(unittest.TestCase):
             )
         )
         self.assertEqual(compatible.provider_name, "openai-compatible")
+        openai = build_llm_gateway(
+            _settings(
+                llm_provider="openai",
+                llm_api_key="test-key",
+                llm_base_url="https://api.openai.com/v1",
+                llm_model="gpt-4o-mini",
+            )
+        )
+        self.assertEqual(openai.provider_name, "openai")
         self.assertIsInstance(
             build_llm_gateway(_settings(llm_provider="acme")),
             DisabledRemoteGateway,
@@ -245,7 +254,8 @@ class BootstrapTelemetryTests(unittest.TestCase):
                 offenders.append(str(node.value))
         self.assertEqual(offenders, [])
         self.assertIn("on_call=", source)
-        self.assertIn("build_llm_gateway", source)
+        self.assertIn("LLMClientFactory", source)
+        self.assertIn("SnapshotLLMGateway", source)
         self.assertIn("AnalyticsService", source)
 
     def test_create_context_injects_public_on_call_for_deepseek(self) -> None:
@@ -272,25 +282,29 @@ class BootstrapTelemetryTests(unittest.TestCase):
             self.assertIs(context.story_design, context.service.story_design)
 
             gateway = context.service.gateway
-            self.assertIsInstance(gateway, DeepSeekLLMGateway)
+            from novel_agent.features.llm_settings.runtime import SnapshotLLMGateway
+
+            self.assertIsInstance(gateway, SnapshotLLMGateway)
+            client = gateway.task_client()
+            self.assertIsInstance(client, DeepSeekLLMGateway)
             self.assertEqual(
-                gateway._on_call.__func__,  # type: ignore[union-attr]
+                client._on_call.__func__,  # type: ignore[union-attr]
                 context.repository.analytics.save_token_usage.__func__,
             )
-            self.assertIs(gateway._on_call.__self__, context.repository.analytics)  # type: ignore[union-attr]
-            self.assertIsNone(gateway._on_usage)
+            self.assertIs(client._on_call.__self__, context.repository.analytics)  # type: ignore[union-attr]
+            self.assertIsNone(client._on_usage)
 
             recorded: list[dict] = []
-            original = gateway._on_call
+            original = client._on_call
 
             def spy(**payload: object) -> None:
                 recorded.append(dict(payload))
                 return original(**payload)
 
-            gateway._on_call = spy
-            gateway.transport = RecordingTransport([completion("完整正文")])
-            gateway.sleep = lambda _: None
-            result = gateway.write_chapter(
+            client._on_call = spy
+            client.transport = RecordingTransport([completion("完整正文")])
+            client.sleep = lambda _: None
+            result = client.write_chapter(
                 NovelCreateRequest(
                     genre="末世",
                     experiences=["爽文"],

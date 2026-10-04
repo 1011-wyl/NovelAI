@@ -7,7 +7,7 @@ name = "novel-agent"
 version = "0.1.0"
 description = "个人自主长篇小说作者智能体"
 requires-python = ">=3.11"
-dependencies = ["pydantic>=2.8,<3"]
+dependencies = ["pydantic>=2.8,<3", "keyring>=25"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6", "pyright>=1.1"]

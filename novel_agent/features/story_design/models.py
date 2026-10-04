@@ -77,10 +77,31 @@ class CharacterProfile(StrictModel):
     personality: list[str] = Field(default_factory=list, max_length=8)
     core_goal: str = Field(default="", max_length=500)
     relationships: dict[str, str] = Field(default_factory=dict)
+    stable_facts: list[str] = Field(default_factory=list, max_length=20)
+    initial_state: str = Field(default="", max_length=1000)
+    initial_goal: str = Field(default="", max_length=500)
+    initial_relationships: dict[str, str] = Field(default_factory=dict)
+    future_arc: str = Field(default="", max_length=1500)
+    future_relationships: dict[str, str] = Field(default_factory=dict)
+    first_appearance_chapter: int | None = Field(default=None, ge=1)
 
-    @field_validator("name", "role", "profile", "core_goal", mode="before")
+    @field_validator("name", "role", "profile", "core_goal", "initial_state", "initial_goal", "future_arc", mode="before")
     @classmethod
     def strip_character_text(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
+class OpeningChapterAnchor(StrictModel):
+    number: Literal[1, 2, 3]
+    title: str = Field(default="", max_length=80)
+    core_event: str = Field(min_length=1, max_length=800)
+    must_establish: list[str] = Field(default_factory=list, max_length=12)
+    forbidden_assumptions: list[str] = Field(default_factory=list, max_length=12)
+    ending_direction: str = Field(default="", max_length=500)
+
+    @field_validator("title", "core_event", "ending_direction", mode="before")
+    @classmethod
+    def strip_anchor_text(cls, value: Any) -> Any:
         return value.strip() if isinstance(value, str) else value
 
 
@@ -98,11 +119,41 @@ class CreativeBrief(StrictModel):
     world_rules: list[str]
     total_chapters: int
     volume_count: int
-    opening_three_chapters: list[str]
+    opening_three_chapters: list[str] = Field(default_factory=list)
+    opening_chapter_anchors: list[OpeningChapterAnchor] = Field(default_factory=list, max_length=3)
     update_plan: str
     style_guide: list[str]
     reader_contract: str = ""
     core_expectation: str = ""
+
+    @model_validator(mode="after")
+    def normalize_opening_anchors(self) -> "CreativeBrief":
+        """Keep one structured source of truth; old string lists stay a derived projection."""
+        if self.opening_chapter_anchors:
+            ordered = sorted(self.opening_chapter_anchors, key=lambda item: item.number)
+            self.opening_chapter_anchors = ordered
+            derived: list[str] = []
+            for anchor in ordered:
+                title = anchor.title.strip()
+                derived.append(
+                    f"{title}：{anchor.core_event}" if title else anchor.core_event
+                )
+            self.opening_three_chapters = derived
+            return self
+        converted: list[OpeningChapterAnchor] = []
+        for index, text in enumerate(self.opening_three_chapters[:3], start=1):
+            event = str(text or "").strip()
+            if not event:
+                continue
+            converted.append(
+                OpeningChapterAnchor(
+                    number=index,  # type: ignore[arg-type]
+                    title="",
+                    core_event=event,
+                )
+            )
+        self.opening_chapter_anchors = converted
+        return self
 
     @model_validator(mode="after")
     def normalize_protagonist(self) -> "CreativeBrief":
