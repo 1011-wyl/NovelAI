@@ -19,6 +19,8 @@
 | [![小说书架：搜索、排序和管理作品](docs/assets/screenshots/library.png)](docs/assets/screenshots/library.png) | [![新建小说：分步骤填写故事起点和创作偏好](docs/assets/screenshots/create-novel.png)](docs/assets/screenshots/create-novel.png) |
 | **数据仪表盘** | **系统设置** |
 | [![数据仪表盘：查看写作活动、模型统计和调用记录](docs/assets/screenshots/analytics.png)](docs/assets/screenshots/analytics.png) | [![系统设置：配置本地偏好并查看运行能力状态](docs/assets/screenshots/settings.png)](docs/assets/screenshots/settings.png) |
+| **作品阅读** | **长期记忆** |
+| [![作品阅读：三栏阅读、草稿编辑和 AI 协作修订工作台](docs/assets/screenshots/reader.png)](docs/assets/screenshots/reader.png) | [![长期记忆：查看重要人物、世界规则、时间线和研究资料](docs/assets/screenshots/memory.png)](docs/assets/screenshots/memory.png) |
 
 ## 已实现
 
