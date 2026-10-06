@@ -1,6 +1,6 @@
 # 第一章开篇恢复与 FAILED 闭环修复执行文档（Cursor）
 
-> 适用项目：`D:\实习日报\NovelAI\NovelAI`  
+> 适用项目：当前仓库根目录
 > 前置任务：`docs/FIRST_CHAPTER_BOOTSTRAP_AND_FAILED_RECOVERY_CURSOR_EXECUTION.md`  
 > 文档性质：在前置任务已大体完成的基础上，修复验收发现的数据安全、质量门、上下文污染和前端恢复问题。  
 > 执行原则：先修复数据安全，再修复审核闭环，最后处理 UI、测试和文档；不得用跳过测试、隐藏错误或修改用户数据库的方式“通过验收”。

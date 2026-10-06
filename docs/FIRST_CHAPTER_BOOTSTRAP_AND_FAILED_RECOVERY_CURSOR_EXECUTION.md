@@ -1,7 +1,7 @@
 # 第一章开篇错位、人物初态污染与 FAILED 恢复闭环——Cursor 执行任务书
 
 > 文档状态：待执行  
-> 适用仓库：`D:\实习日报\NovelAI\NovelAI`  
+> 适用仓库：当前仓库根目录
 > 技术栈：Python + SQLite + Vue 3 + TypeScript + Pinia + Vitest + Playwright  
 > 本文用途：交给 Cursor 在当前未提交修改之上增量实施，不是产品概念稿。
 
@@ -977,7 +977,7 @@ Cursor 完成后必须按以下格式汇报：
 ## 20. 可直接复制给 Cursor 的提示词
 
 ```text
-请在仓库 D:\实习日报\NovelAI\NovelAI 中，严格执行：
+请在当前仓库根目录中，严格执行：
 
 docs/FIRST_CHAPTER_BOOTSTRAP_AND_FAILED_RECOVERY_CURSOR_EXECUTION.md
 

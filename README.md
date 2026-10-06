@@ -65,10 +65,9 @@
 
 要求：Python 3.11 或更高版本，并安装 `pydantic>=2.8`；前端构建需要 Node.js 20+。
 
-首次或更新前端后：
+先在 PowerShell 中进入仓库根目录。首次使用或更新前端后：
 
 ```powershell
-cd D:\NovelAgent
 cd apps\web
 npm ci
 npm run build

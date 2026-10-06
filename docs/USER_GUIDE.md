@@ -38,10 +38,9 @@ Novel Agent 是一个个人使用的长篇小说创作智能体。它可以根�
 - Node.js 20 或更高版本（仅用于构建前端；日常运行不需要）。
 - 推荐使用 PowerShell。
 
-在 PowerShell 中执行：
+先在 PowerShell 中进入仓库根目录，再执行：
 
 ```powershell
-cd D:\NovelAgent
 python -m pip install -e .
 cd apps\web
 npm ci
@@ -64,7 +63,6 @@ Playwright 会使用系统临时目录中的独立测试数据库，不会读写
 任选一种方式：
 
 ```powershell
-cd D:\NovelAgent
 python -m novel_agent serve
 ```
 
@@ -586,10 +584,10 @@ OH_STORY_ENABLED=true
 
 ### 14.1 默认位置
 
-默认数据库：
+默认数据库相对于项目根目录，路径为：
 
 ```text
-D:\NovelAgent\data\novel_agent.db
+data\novel_agent.db
 ```
 
 可以在 `.env.local` 中修改：
@@ -605,8 +603,8 @@ SQLite 数据库按 `project_id` 隔离不同小说。人物、章节、方案�
 备份前先停止服务，避免只复制主文件而遗漏 WAL 中尚未合并的数据：
 
 ```powershell
-cd D:\NovelAgent
-Copy-Item .\data\novel_agent.db .\data\backup_novel_agent_20260718.db
+$stamp = Get-Date -Format yyyyMMdd
+Copy-Item .\data\novel_agent.db ".\data\backup_novel_agent_$stamp.db"
 ```
 
 建议在以下操作前备份：
@@ -795,7 +793,11 @@ MEMORY_RESEARCH_RELIABILITY=0.5
 
 `LLM_REASONING_BUDGET_FACTOR` 控制模型最大输出预算倍率，程序会限制在 `1.0` 到 `4.0`。提高倍率可能减少结构化输出被截断的概率，但也会增加耗时和费用。正文一旦被供应商标记为长度截断，系统会拒绝提交半成品。
 
-## 18. 文档同步规则
+## 18. Docker Compose 安全说明
+
+根目录的 `docker-compose.yml` 仅用于本机开发与可选基础设施，应用端口固定绑定到 `127.0.0.1:8000`，不会直接监听公网网卡。启用其中的 `production-infra` profile 前，必须在本机 `.env` 中自行设置 `POSTGRES_PASSWORD`、`MINIO_ROOT_USER` 和 `MINIO_ROOT_PASSWORD`；这些值不得留空、使用示例口令或提交到 Git。PostgreSQL 和 MinIO 会在对应变量为空时拒绝启动，建议分别生成不同的随机强密码。当前应用不会仅因这些容器已启动就自动迁移到 PostgreSQL 或对象存储，仍需按实际实现配置对应连接变量。
+
+## 19. 文档同步规则
 
 以后新增、删除或修改下列内容时，必须在同一次代码更新中同步修改本文件：
 

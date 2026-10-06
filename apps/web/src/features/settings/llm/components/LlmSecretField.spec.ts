@@ -12,13 +12,13 @@ describe("LlmSecretField", () => {
       },
     });
     expect(wrapper.text()).toContain("已保存密钥：••••1234");
-    expect(wrapper.html()).not.toContain("sk-live-should-never-appear");
+    expect(wrapper.html()).not.toContain("test-secret-value-do-not-use");
     const input = wrapper.get("input");
     expect(input.attributes("type")).toBe("password");
     await wrapper.get("button.toggle").trigger("click");
     expect(wrapper.emitted("update:show")?.[0]).toEqual([true]);
     await wrapper.setProps({ show: true, modelValue: "typed-secret" });
     expect(wrapper.get("input").attributes("type")).toBe("text");
-    expect(wrapper.html()).not.toContain("sk-live-should-never-appear");
+    expect(wrapper.html()).not.toContain("test-secret-value-do-not-use");
   });
 });

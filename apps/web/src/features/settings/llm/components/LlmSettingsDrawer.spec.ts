@@ -83,7 +83,7 @@ describe("LlmSettingsDrawer", () => {
     expect(wrapper.text()).toContain("API Key 无效或已失效");
     expect(wrapper.find('[data-testid="llm-save-success"]').exists()).toBe(false);
     expect(saveLlmSettings).not.toHaveBeenCalled();
-    expect(wrapper.html()).not.toContain("sk-live-should-never-appear");
+    expect(wrapper.html()).not.toContain("test-secret-value-do-not-use");
     wrapper.unmount();
   });
 

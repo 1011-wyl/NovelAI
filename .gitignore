@@ -22,3 +22,6 @@ artifacts/
 apps/web/playwright-report/
 apps/web/test-results/
 apps/web/blob-report/
+.deploy-known-hosts
+_tmp_*.py
+.idea/

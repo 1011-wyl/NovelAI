@@ -2,7 +2,7 @@ services:
   novel-agent:
     build: .
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       NOVEL_AGENT_MODE: offline
       NOVEL_AGENT_DATABASE: /app/data/novel_agent.db
@@ -13,10 +13,15 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     profiles: ["production-infra"]
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        test -n "$${POSTGRES_PASSWORD}" || { echo "POSTGRES_PASSWORD must be set" >&2; exit 1; }
+        exec docker-entrypoint.sh postgres
     environment:
       POSTGRES_DB: novel_agent
       POSTGRES_USER: novel_agent
-      POSTGRES_PASSWORD: change-me-before-use
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
@@ -30,10 +35,15 @@ services:
   minio:
     image: minio/minio:latest
     profiles: ["production-infra"]
-    command: server /data --console-address ":9001"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        test -n "$${MINIO_ROOT_USER}" || { echo "MINIO_ROOT_USER must be set" >&2; exit 1; }
+        test -n "$${MINIO_ROOT_PASSWORD}" || { echo "MINIO_ROOT_PASSWORD must be set" >&2; exit 1; }
+        exec minio server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: change-me
-      MINIO_ROOT_PASSWORD: change-me-before-use
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-}
     volumes:
       - minio_data:/data
 

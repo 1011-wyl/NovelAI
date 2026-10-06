@@ -1,7 +1,7 @@
 # 章节质量标准对齐与自动修订闭环——Cursor 执行任务书
 
 > 文档状态：待执行  
-> 适用仓库：`D:\实习日报\NovelAI\NovelAI`  
+> 适用仓库：当前仓库根目录
 > 技术栈：Python + SQLite + Vue 3 + TypeScript + Pinia + Vitest + Playwright  
 > 前置修复：`docs/FIRST_CHAPTER_RECOVERY_REMEDIATION_CURSOR_EXECUTION.md`  
 > 本文用途：交给 Cursor 在当前大量未提交修改之上增量实施。本文不是概念建议，所有“必须”均为验收项。
@@ -836,7 +836,7 @@ git diff --check
 ## 21. 可直接复制给 Cursor 的提示词
 
 ```text
-请在当前仓库 D:\实习日报\NovelAI\NovelAI 中，严格按照
+请在当前仓库根目录中，严格按照
 docs/CHAPTER_QUALITY_ALIGNMENT_AND_AUTO_REVISION_CURSOR_EXECUTION.md
 执行“章节质量标准对齐与自动修订闭环”任务。
 

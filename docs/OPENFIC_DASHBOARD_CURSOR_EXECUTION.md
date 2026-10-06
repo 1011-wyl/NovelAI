@@ -10,8 +10,8 @@
 
 ```text
 请先完整阅读：
-1. D:\实习日报\NovelAI\NovelAI\AGENTS.md
-2. D:\实习日报\NovelAI\NovelAI\docs\OPENFIC_DASHBOARD_CURSOR_EXECUTION.md
+1. 当前仓库根目录下的 `AGENTS.md`
+2. 当前文件 `docs/OPENFIC_DASHBOARD_CURSOR_EXECUTION.md`
 3. 本文“参考源码”表中列出的 NovelAI 与 OpenFic 文件
 
 严格按本文的阶段 0→7 顺序实施，不要跳过数据库迁移、埋点、测试、响应式或用户手册更新。
@@ -73,8 +73,8 @@ OpenFic 的“仪表盘”和“设置”本来就是两个入口。NovelAI 当�
 
 | 用途 | 文件 |
 | --- | --- |
-| 页面状态、三个页签、默认 30 天范围、查询触发 | `D:\实习日报\githubClone\OpenFic\frontend\src\features\dashboard\pages\dashboard-page.tsx` |
-| 页面尺寸、栅格、表格、断点 | `D:\实习日报\githubClone\OpenFic\frontend\src\features\dashboard\pages\dashboard-page.css` |
+| 页面状态、三个页签、默认 30 天范围、查询触发 | `<OPENFIC_ROOT>/frontend/src/features/dashboard/pages/dashboard-page.tsx` |
+| 页面尺寸、栅格、表格、断点 | `<OPENFIC_ROOT>/frontend/src/features/dashboard/pages/dashboard-page.css` |
 | 写作日历和四项年度指标 | `...\frontend\src\features\dashboard\components\writing-dashboard-tab.tsx` |
 | LLM 四项指标和六张图 | `...\frontend\src\features\dashboard\components\llm-dashboard-tab.tsx` |
 | 调用记录表格、排序、分页、空态 | `...\frontend\src\features\dashboard\components\dashboard-records-tab.tsx` |
@@ -791,7 +791,7 @@ window.NovelDashboard.init({ api, escapeHtml, notify });
 
 不要修改：
 
-- `D:\实习日报\githubClone\OpenFic` 中的任何文件。
+- OpenFic 参考仓库根目录中的任何文件。
 - 与仪表盘无关的 Story Skills、oh-story 供应文件。
 - 当前创建、写作、审核和记忆领域模型的业务语义。
 
