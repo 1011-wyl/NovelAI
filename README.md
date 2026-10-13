@@ -8,6 +8,32 @@
 
 **在线部署：** [https://115.190.241.170:8443/](https://115.190.241.170:8443/)（需要 Basic Auth 访问凭据；当前使用 IP HTTPS，浏览器可能提示自签名证书风险。）
 
+## 界面预览
+
+以下截图来自桌面端离线演示环境，使用独立的示例数据库，不包含真实 API Key 或用户数据。点击图片可查看原图。
+
+### 核心界面：作品阅读与修订
+
+作品阅读是日常创作的主工作台：左侧选择章节和状态，中间阅读或编辑工作草稿，右侧与 AI 协作修订。AI 只能提出建议，修改需人工批准后才进入草稿，应用修订后才会成为正式版本；顶部可查看历史版本、放弃草稿或重新送审。
+
+[![作品阅读与修订：章节列表、正文编辑和 AI 协作三栏工作台](docs/assets/screenshots/reader.png)](docs/assets/screenshots/reader.png)
+
+### 创作工作台
+
+[![创作工作台：查看创作方案、章节储备和章节生产流程](docs/assets/screenshots/workbench.png)](docs/assets/screenshots/workbench.png)
+
+### 长期记忆
+
+[![长期记忆：查看重要人物、世界规则、时间线和研究资料](docs/assets/screenshots/memory.png)](docs/assets/screenshots/memory.png)
+
+### 其他主要页面
+
+| 小说书架 | 新建小说 |
+|---|---|
+| [![小说书架：搜索、排序和管理作品](docs/assets/screenshots/library.png)](docs/assets/screenshots/library.png) | [![新建小说：分步骤填写故事起点和创作偏好](docs/assets/screenshots/create-novel.png)](docs/assets/screenshots/create-novel.png) |
+| **数据仪表盘** | **系统设置** |
+| [![数据仪表盘：查看写作活动、模型统计和调用记录](docs/assets/screenshots/analytics.png)](docs/assets/screenshots/analytics.png) | [![系统设置：配置本地偏好并查看运行能力状态](docs/assets/screenshots/settings.png)](docs/assets/screenshots/settings.png) |
+
 ## 项目核心流程
 
 下面的流程图概括了从创建作品、确认创作方案，到单章生成、审核、人工处理和正式入库的完整链路。只有通过审核的章节才会原子提交正文与长期记忆，并进入 `READY` 状态。
@@ -49,32 +75,6 @@ flowchart TD
     Y -- 是 --> H
     Y -- 否 --> Z[保留当前正式版本]
 ```
-
-## 界面预览
-
-以下截图来自桌面端离线演示环境，使用独立的示例数据库，不包含真实 API Key 或用户数据。点击图片可查看原图。
-
-### 核心界面：作品阅读与修订
-
-作品阅读是日常创作的主工作台：左侧选择章节和状态，中间阅读或编辑工作草稿，右侧与 AI 协作修订。AI 只能提出建议，修改需人工批准后才进入草稿，应用修订后才会成为正式版本；顶部可查看历史版本、放弃草稿或重新送审。
-
-[![作品阅读与修订：章节列表、正文编辑和 AI 协作三栏工作台](docs/assets/screenshots/reader.png)](docs/assets/screenshots/reader.png)
-
-### 创作工作台
-
-[![创作工作台：查看创作方案、章节储备和章节生产流程](docs/assets/screenshots/workbench.png)](docs/assets/screenshots/workbench.png)
-
-### 长期记忆
-
-[![长期记忆：查看重要人物、世界规则、时间线和研究资料](docs/assets/screenshots/memory.png)](docs/assets/screenshots/memory.png)
-
-### 其他主要页面
-
-| 小说书架 | 新建小说 |
-|---|---|
-| [![小说书架：搜索、排序和管理作品](docs/assets/screenshots/library.png)](docs/assets/screenshots/library.png) | [![新建小说：分步骤填写故事起点和创作偏好](docs/assets/screenshots/create-novel.png)](docs/assets/screenshots/create-novel.png) |
-| **数据仪表盘** | **系统设置** |
-| [![数据仪表盘：查看写作活动、模型统计和调用记录](docs/assets/screenshots/analytics.png)](docs/assets/screenshots/analytics.png) | [![系统设置：配置本地偏好并查看运行能力状态](docs/assets/screenshots/settings.png)](docs/assets/screenshots/settings.png) |
 
 ## 已实现
 
